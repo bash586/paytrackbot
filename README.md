@@ -23,6 +23,7 @@
 | undo action        | `/undo`                         | enables admin to undo selected action           |
 
 ### Check List:
+* add pager-view of transactions and history of commands made by admin (linked-list based implementation)
 * add search_transaction command displaying all details of related transactions
 * show user a loader until transaction is commited
 * remove customer account. or auto-delete customers with zero balance.
@@ -34,7 +35,7 @@
 * if there is only one search result. select automatically
 * add a password check for add_payment command and changing customer name.
 * show your creative touch with tags
-* enable users to add hidden nicknames, and store it in customers(name) field with a special delimeter
+* enhance search: enable users to add hidden nicknames, and store it in customers(name) field with a special delimeter
 * output excel summary **[unfortunately, may be a dream out of my reach]**
 
 ## Tech Stack

@@ -21,7 +21,7 @@ def main():
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     if not BOT_TOKEN:
         raise ValueError("invalid bot token")
-    
+
     persistence = PicklePersistence(
         filepath="data.pkl",
         update_interval=30,
@@ -51,21 +51,18 @@ def main():
         CommandHandler('search', handlers.search),
         CallbackQueryHandler(handlers.select_customer_command, pattern=r"^customer_select:"),
         CommandHandler("summary", handlers.summary),
-        CommandHandler("addcustomer", handlers.add_customer),
+        CommandHandler("addcustomer", handlers.add_customer_command),
         CommandHandler("addtransaction", handlers.add_transaction),
-        CommandHandler("deletecustomer", handlers.delete_customer_command),
-        CommandHandler("renamecustomer", handlers.rename_customer_command),
+        CommandHandler("delete", handlers.delete_customer_command),
+        CommandHandler("rename", handlers.rename_customer_command),
         CommandHandler("changephone", handlers.change_phone_command),
+        CommandHandler("undo", handlers.undo_last_action),
     ]
 
     application.add_handlers(all_handlers)
 
     # start program
     application.run_polling()
-    # application.initialize()
-    # application.post_init()
-    # application.telegram.ext.Updater.start_polling()
-    # application.start()
     
 
 

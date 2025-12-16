@@ -10,37 +10,75 @@ NO_SELECTED_CUSTOMER_WARNING = """<b>Error: you must select a customer first...<
  query* : <b>name</b>/<b>phone</b>
  Note: <code>/search</code> will display all your customers
 """
-welcome_msg = """
-<b>Welcome to the Paytrack bot</b>
-<i>Select an option to continue.</i>
+INVALID_USAGE = {
+    "addtransaction": '\n'.join([
+        "<b>Incorrect Command Usage...</b>",
+        "Usage: <code>/addtransaction amount*|type*|info</code>",
+        "type*: '<b>sale</b>' or '<b>payment</b>' ",
+    ]),
+    "addcustomer": '\n'.join([
+        f"<b>Incorrect Command Usage...</b>",
+        "Usage: <code>/addcustomer fullname*|phone*</code>"
+    ]),
+    "rename":'\n'.join([
+        "<b>Incorrect Command Usage...</b>",
+        "Usage: <code>/rename newname*</code>",
+    ]),
+    "changephone": '\n'.join([
+        "<b>Incorrect Command Usage...</b>",
+        "Usage: <code>/changephone newphone*</code>",
+    ])
+    
+}
 
-<blockquote>
-<b>Updates available</b>
-Profile • Settings
-</blockquote>
+WELCOME_MSG = """
+<b>Welcome to the Pay Track Bot
 
-<a href="https://example.com/dashboard">Open dashboard</a>
-<b>Welcome to the platform</b>
-<i>Select an option to continue.</i>
+I am here to help you manage customers, balances, and cash flow.  
+Use the commands below as your quick reference.</b>
 
-<blockquote>
-「 ✦ Besho vergjel jikabohboj ✦ 」
+<b>Customer Management</b>
+<code>/addcustomer Full Name | Phone</code>
+Create a customer.
 
-<b>💸 <code>$500.0</code>
-                            12:57 PM • 14 Nov 2025</b>
+<code>/search query | limit</code>
+Search by name or phone.
 
-<b>💰 <code>$5.0</code>
-                            12:57 PM • 14 Nov 2025</b>
- 
-<b>💸 <code>$500.0</code>
-                            12:57 PM • 14 Nov 2025</b>
- 
-<b>💰 <code>$5.0</code>
-                            12:57 PM • 14 Nov 2025</b>
+<code>/summary</code>
+Show details of the selected customer.
 
-</blockquote>
+<code>/delete</code>
+Remove the selected customer.
 
+<code>/rename New Full Name</code>
+Rename the selected customer.
 
-<a href="https://example.com/dashboard">Open dashboard</a>
+<code>/changephone NewPhone</code>
+Update the customer's phone.
+
+<b>Transactions</b>
+<code>/addtransaction amount | type | description</code>
+Record a transaction.
+
+<code>/transactions limit</code>
+View recent transactions.
+---
+
+<b>Other Useful Commands</b>
+<code>/undo</code> — Undo your last action.
+<code>/help</code> — show this cheat-sheet
+---
+
+<b>Important Notes</b>
+A customer must be selected before running customer-related commands.  
+Use <code>/search</code> then select a customer.
+---
+
+<b>Example</b>
+<code>/addcustomer John Doe | +972501234567
+/search johnw
+/addtransaction 150 | sale | sold 10 items
+/rename John M Doe
+/changephone +972598765432</code>
 
 """
