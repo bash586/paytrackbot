@@ -1,12 +1,11 @@
-from datetime import datetime
+from functools import reduce
 import json
 from typing import Optional
-from aiosqlite import IntegrityError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from bot.helpers import is_valid_name, normalize_fullname, is_valid_phone, get_args, normalize_name, normalize_phone
-from bot.database_manager import DatabaseManager
-from config import DATABASE_PATH, NO_SELECTED_CUSTOMER_WARNING,welcome_msg
+from bot.database_manager import DatabaseManager, AppError
+from config import INVALID_USAGE, NO_SELECTED_CUSTOMER_WARNING,WELCOME_MSG
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,7 +15,7 @@ logger.setLevel(logging.INFO)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_message:
-        await update.effective_message.reply_html(welcome_msg)
+        await update.effective_message.reply_html(WELCOME_MSG)
 
 async def update_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """update history of commands made by admin"""
@@ -67,7 +66,7 @@ async def select_customer(customer_id, admin_id, db_manager, user_data):
     # update user_data
     set_selected_customer(
         user_data,
-        {k: customer[k] for k in ("id", "fullname", "balance")}
+        {k: customer[k] for k in ("customer_id", "fullname", "balance")}
     )
     return customer
 
@@ -99,61 +98,82 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
     await query.delete_message()
     await update.effective_message.reply_html(feedback_msg)
 
-async def add_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_customer(
+    fullname, phone, admin_id, db_manager: DatabaseManager, user_data, with_logging,
+    customer_id=None, created_at=None, balance=None
+):
+    fullname, phone = normalize_fullname(fullname), normalize_phone(phone)
+
+    # validate inputs
+    if not is_valid_name(fullname):
+        err_msg = """
+        Invalid Name: name should include:
+        - first and last name (required)
+        - middle name (optional)
+        """
+        return {
+            'ok': False,
+            'error': err_msg
+        }
+
+    if not is_valid_phone(phone):
+        err_msg = "Invalid Phone Number"
+        return {
+            'ok': False,
+            'error': err_msg
+        }
+
+    try:
+        old_info = {
+            'customer_id': customer_id,
+            'created_at': created_at,
+            'balance': balance
+        } if not with_logging else None
+        result = await db_manager.add_customer(fullname, phone, admin_id, with_logging, old_info)
+        customer_id = result['customer_id']
+
+    except AppError as exc:
+        return {
+            'ok': False,
+            'error': str(exc)
+        }
+    except Exception as exc:
+        return {
+            'ok': False,
+            'error': "Something went wrong. Please try again later."
+        }
+
+    # select added customer
+    if with_logging:
+        await select_customer(customer_id, admin_id, db_manager, user_data)
+    undo_details = result['undo_details']
+    return {
+        'ok': True,
+        'error': None,
+        'undo_details': undo_details,
+        'action_type': 'delete-customer'
+    }
+async def add_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Usage: /addcustomer <fullname>|<phone number>
 
     args = get_args(update.effective_message.text)
 
     if len(args) < 2:
-        err_msg = '\n'.join([
-            f"<b>Incorrect Command Usage...</b>",
-            "Usage: <code>/addcustomer fullname*|phone*</code>"
-        ])
+        err_msg = INVALID_USAGE['addcustomer']
         return await update.effective_message.reply_html(err_msg)
 
     fullname, phone = normalize_fullname(args[0]), normalize_phone(args[1])
 
-    # validate inputs
-    if not is_valid_name(fullname):
-        await update.effective_message.reply_text("""
-        Invalid Name: name should include:
-        - first and last name (required)
-        - middle name (optional)
-        """)
-        return
-
-    if not is_valid_phone(phone):
-        await update.effective_message.reply_text(f"Invalid Phone Number")
-        return
-
-    # add to database
-    db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
+    db_manager: DatabaseManager = context.bot_data['db_manager']
 
-    try:
-        customer_row = await db_manager.add_customer(fullname, phone, admin_id)
-    except IntegrityError as exc:
-        await update.effective_message.reply_text(f"Customer with name {fullname.upper()} already exists")
-        return
-    except Exception as exc:
-        await update.effective_message.reply_text(f"Error: {str(exc)}")
+    result = await add_customer(fullname, phone, admin_id, db_manager, context.user_data, True)
+    if not result['ok']:
+        await update.effective_message.reply_text(result['error'])
         return
 
-    customer_id = customer_row['id']
     await update.effective_message.reply_text(f'New Customer: added {fullname.upper()}')
-    # select added customer
-    await select_customer(customer_id, admin_id, db_manager, context.user_data)
-
-    # bookmark: log action
-    action_info = dict()
-    try:
-        await db_manager.add_action_log('add_customer', customer_id, admin_id, action_info)
-    except Exception as exc:
-        await update.effective_message.reply_text(f"Action failed to get logged: {str(exc)}")
-        return
-
-    # bookmark: check all existing names if there is similarities in first\last name
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """get more info about selected customer"""
@@ -162,7 +182,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not selected_customer:
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
-    customer_id = selected_customer['id']
+    customer_id = selected_customer['customer_id']
 
     db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
@@ -171,6 +191,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     recent = summary['recent']
     recent_actions = []
+
     def format_transaction(transaction, is_last):
         return "\n".join([
             f"<b>{'💸' if transaction['type'] == 'sale' else '💰'} {transaction['amount']:.1f}</b>",
@@ -214,48 +235,41 @@ async def add_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # syntax validation
     args = get_args(update.effective_message.text)
     if len(args) == 0:
-        err_msg = '\n'.join([
-            "<b>Incorrect Command Usage...</b>",
-            "Usage: <code>/addtransaction amount*|type*|info</code>",
-            "type*: '<b>sale</b>' or '<b>payment</b>' ",
-        ])
+        err_msg = INVALID_USAGE['addtransaction']
         await update.effective_message.reply_html(err_msg)
         return
 
-    amount = normalize_name(args[0])
     type_ = normalize_name(args[1])
     description = "" if len(args)<3 else args[2]
+    try:
+        amount = float(normalize_name(args[0]))
+    except ValueError:
+        await update.effective_message.reply_html("Invalid <b>amount</b> value: amount must be a number")
+        return
 
-    if not amount.isdigit() or not type_ in ('sale', 'payment'):
-        err_msg = '\n'.join([
-            "<b>Incorrect Command Usage...</b>",
-            "Usage: <code>/addtransaction amount*|type*|info</code>",
-            "type*: '<b>sale</b>' or '<b>payment</b>' ",
-        ])
+    if not type_ in ('sale', 'payment'):
+        err_msg = INVALID_USAGE['addtransaction']
         await update.effective_message.reply_html(err_msg)
         return
 
-    if float(amount) <= 0:
-        err_msg = '\n'.join([
-            "<b>Only positive amounts are allowed...</b>",
-        ])
-        await update.effective_message.reply_html(err_msg)
+    if amount <= 0:
+        await update.effective_message.reply_html("<b>Only positive amounts are allowed...</b>")
         return
 
     db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
 
-    customer_id = selected_customer['id']
+    customer_id = selected_customer['customer_id']
     fullname = selected_customer['fullname']
 
     amount = float(amount)
-    selected_customer['balance'] += (1 if type_ == 'payment' else -1) * amount
-    new_balance = selected_customer['balance']
     try:
         transaction = await db_manager.add_transaction(amount, type_, description, customer_id, admin_id)
     except Exception as exc:
-        await update.effective_message.reply_text(f"Error: {str(exc)}")
+        await update.effective_message.reply_text("Something went wrong. Please try again later.")
         return
+    selected_customer['balance'] = (await db_manager.get_customer_by_id(customer_id, admin_id))['balance']
+    new_balance = selected_customer['balance']
 
 
     feedback_msg = '\n'.join([
@@ -267,15 +281,24 @@ async def add_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await update.effective_message.reply_html(feedback_msg)
+    
 
-    # log action
 
-    action_info = dict(transaction)
-    try:
-        await db_manager.add_action_log('add_transaction', customer_id, admin_id, action_info)
-    except Exception as exc:
-        await update.effective_message.reply_text(f"Error: {str(exc)}")
-        return
+async def delete_transaction(
+    customer_id: int, admin_id: int, id: int,
+    db_manager:DatabaseManager, user_data: dict, with_logging = True
+):
+    details = await db_manager.delete_transaction(id)
+    return {
+        'action_type': 'record-transaction',
+        'undo_details': {
+            'Full Name': details['fullname'].upper(),
+            'Amount': details['amount'],
+            'Type': details['type'],
+            'Description': details['description'] if len(details['description'])>0 else '-',
+            'Current Balance': details['balance'],
+        }
+    }
 
 async def delete_customer(
     customer_id: int, admin_id: int,
@@ -285,31 +308,35 @@ async def delete_customer(
 ):
 
     try:
-        is_deleted = await db_manager.delete_customer(customer_id, admin_id, with_logging)
+        deleted_customer = await db_manager.delete_customer(customer_id, admin_id, with_logging)
+    except AppError:
+        return {
+            'ok': False,
+            'error': f"{str(exc)}",
+        }
     except Exception as exc:
         return {
             'ok': False,
-            'error': f"Error: {str(exc)}",
-        }
-
-    if not is_deleted:
-        return {
-            'ok': False,
-            'error': "Unknown Error: Customer can not be deleted now... retry later"
+            'error': "Something went wrong. Please try again later.",
         }
 
     # remove customer from context
     selected_customer = get_selected_customer(user_data)
-    if selected_customer['id'] == customer_id:
-        set_selected_customer(user_data, None) 
+    if selected_customer and selected_customer['customer_id'] == customer_id:
+        set_selected_customer(user_data, None)
 
     return {
         'ok': True,
-        'error': None
+        'error': None,
+        'undo_details': {
+            'Full Name': deleted_customer['fullname'].upper(),
+            'Phone': deleted_customer['phone'],
+            'balance': deleted_customer['balance'],
+        },
+        'action_type': 'add-customer'
     }
 
 async def delete_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Usage: /deletecustomer
 
     # get selected customer
     selected_customer = get_selected_customer(context.user_data)
@@ -321,8 +348,8 @@ async def delete_customer_command(update: Update, context: ContextTypes.DEFAULT_
     db_manager: DatabaseManager = context.bot_data['db_manager']
 
     admin_id = update.effective_user.id
-    customer_id = selected_customer['id']
-    customer_name = select_customer['fullname']
+    customer_id = selected_customer['customer_id']
+    customer_name = selected_customer['fullname']
 
     result = await delete_customer(customer_id, admin_id, db_manager, context.user_data)
     if not result['ok']:
@@ -352,40 +379,40 @@ async def rename_customer(
                 - first and last name (required)
                 - middle name (optional)
             """,
-            'proposed_name': new_name,
+            'new name': new_name,
         }
 
     try:
-        is_renamed = await db_manager.rename_customer(new_name, customer_id, admin_id, with_logging)
-    except IntegrityError:
+        old_name = await db_manager.rename_customer(new_name, customer_id, admin_id, with_logging)
+    except AppError as exc:
         return {
             'ok': False,
-            'error': f"IntegrityError: Customer with name: {new_name} already exists",
-            'proposed_name': new_name,
+            'error': str(exc),
+            'new name': new_name,
         }
     except Exception as exc:
         return {
             'ok': False,
-            'error': f"Error: {str(exc)}",
-            'proposed_name': new_name,
+            'error': "Something went wrong. Please try again later.",
+            'new name': new_name,
         }
 
-    if not is_renamed:
-        return {
-            'ok': False,
-            'error': "Unknown Error: Customer can not be renamed now... retry later",
-            'proposed_name': new_name,
-        }
 
     # update context
     selected_customer = get_selected_customer(user_data)
-    if selected_customer['id'] == customer_id:
+    if selected_customer['customer_id'] == customer_id:
         rename_customer_state(user_data, new_name)
+    undo_dict = {
+        'Current Name': new_name,
+        'Was Renamed To': old_name,
+    }
 
     return {
         'ok': True,
         'error': None,
-        'proposed_name': new_name,
+        'new name': new_name,
+        'undo_details': undo_dict,
+        'action_type': 'rename-customer'
     }
 
 async def rename_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,28 +425,22 @@ async def rename_customer_command(update: Update, context: ContextTypes.DEFAULT_
 
     args = get_args(update.effective_message.text)
     if len(args) == 0:
-        err_msg = '\n'.join([
-            "<b>Incorrect Command Usage...</b>",
-            "Usage: <code>/renamecustomer newname*</code>",
-        ])
+        err_msg = INVALID_USAGE['renamecustomer']
         await update.effective_message.reply_html(err_msg)
         return
 
-    customer_id = selected_customer['id']
+    customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
 
     # update database
     db_manager: DatabaseManager = context.bot_data['db_manager']
     new_name = args[0]
     result = await rename_customer(new_name, customer_id, admin_id, db_manager, context.user_data)
-    new_name = result['proposed_name']
+    new_name = result['new name']
 
     if not result['ok']:
         err_msg = result['error']
-        if err_msg.startswith('IntegrityError'):
-            await update.effective_message.reply_text(f"Customer with name {result['proposed_name'].upper()} already exists")
-        else:
-            await update.effective_message.reply_text(err_msg)
+        await update.effective_message.reply_text(err_msg)
         return
 
     # feedback
@@ -442,18 +463,17 @@ async def change_phone(
         }
 
     try:
-        is_updated = await db_manager.change_customer_phone(new_phone, customer_id, admin_id, with_logging)
+        result = await db_manager.change_customer_phone(new_phone, customer_id, admin_id, with_logging)
+    except AppError as exc:
+        return{
+            'ok': False,
+            'error': str(exc),
+            'proposed_phone': new_phone,
+        }
     except Exception as exc:
         return {
             'ok': False,
-            'error': f"Error: {str(exc)}",
-            'proposed_phone': new_phone,
-        }
-
-    if not is_updated:
-        return {
-            'ok': False,
-            'error': "Unknown Error: Customer phone is not updated... retry later",
+            'error': "Something went wrong. Please try again later.",
             'proposed_phone': new_phone,
         }
 
@@ -461,6 +481,12 @@ async def change_phone(
         'ok': True,
         'error': None,
         'proposed_phone': new_phone,
+        'undo_details': {
+            'Full Name': result['fullname'],
+            'Current Phone': new_phone,
+            'Phone Was Changed To': result['old_phone'],
+        },
+        'action_type': 'update-phone'
     }
 
 async def change_phone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -473,16 +499,13 @@ async def change_phone_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     args = get_args(update.effective_message.text)
     if len(args) == 0:
-        err_msg = '\n'.join([
-            "<b>Incorrect Command Usage...</b>",
-            "Usage: <code>/changephone newphone*</code>",
-        ])
+        err_msg = INVALID_USAGE['changephone']
         await update.effective_message.reply_html(err_msg)
         return
 
     new_phone = args[0]
 
-    customer_id = selected_customer['id']
+    customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
 
     db_manager: DatabaseManager = context.bot_data['db_manager']
@@ -494,52 +517,47 @@ async def change_phone_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # feedback
-    await update.effective_message.reply_text(f"Customer Phone has been successfully updated To:\n {result['proposed_phone']}")
-
-    # feedback
     await update.effective_message.reply_text(
         f'Customer Name Has Been Changed To:\n {new_phone.upper()}'
     )
 
 async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db_manager = context.bot_data['db_manager']
-    # delete and fetch last action log
-    action_log = await db_manager.undo_last_action()
-    # decide which inverse function to execute
+    inverse = {
+        "rename_customer": rename_customer,
+        "change_phone": change_phone,
+        "delete_customer": add_customer,
+        "add_customer": delete_customer,
+        "add_transaction": delete_transaction,
+    }
+    kwargs = dict()
+    # fetch last action log
+    db_manager: DatabaseManager = context.bot_data['db_manager']
+    admin_id = update.effective_sender.id
+    action_log = await db_manager.undo_last_action(admin_id)
     action_type = action_log['action_type']
-    logging_info = json.loads(action_log['payload'])
+
+    payload = json.loads(action_log['payload'])
+    customer_transactions = payload.pop('customer_transactions', None)
     customer_id = action_log['customer_id']
-    admin_id = action_log['admin_id']
 
-    match action_type:
-        case 'rename_customer':
-            result = await rename_customer(
-                logging_info['old_name'], customer_id, admin_id, db_manager,
-                context.user_data, with_logging=False,
-            )
-        case 'change_phone':
-            result = await change_phone(
-                logging_info['old_phone'], customer_id, admin_id, db_manager,
-                context.user_data, with_logging=False,
-            )
+    inverse_func = inverse[action_type]
+    kwargs.update({
+        "db_manager": db_manager,
+        "user_data": context.user_data,
+        "customer_id":customer_id,
+        "admin_id":admin_id,
+        "with_logging": False,
+    })
+    kwargs.update(payload)
 
-        case 'delete_customer ':
-            result = await add_customer(
-                logging_info['old_phone'], customer_id, admin_id, db_manager,
-                context.user_data, with_logging=False,
-            )
-    # cancel action by executing corresponding inverse function
+    result = await inverse_func(**kwargs)
+    
+    if customer_transactions:
+        await db_manager.restore_transactions(customer_transactions)
 
-def view_latest_transactions():
-    pass
-
-def merge_accounts():
-    pass
-
-def link_accounts():
-    pass
-
-# utils
+    details = result['undo_details']
+    action_type = result['action_type']
+    await update.effective_message.reply_html(format_undo_msg(details, action_type))
 
 
 # managing context state
@@ -557,3 +575,14 @@ def rename_customer_state(user_data: dict, new_name: str)->None:
     customer = context_state['selected_customer']
     customer['fullname'] = new_name
     
+def format_undo_msg(details: dict, action_type):
+    undo_details = "\n".join(
+        f" → <b>{k}:</b> {details[k]}"
+        for k in details
+    )
+
+    return "\n".join([
+        "<b>Undo Complete</b>",
+        f"The <b>{action_type}</b> command has been cancelled.",
+        undo_details
+    ])

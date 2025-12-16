@@ -11,6 +11,10 @@ import logging
 
 from bot.helpers import normalize_fullname, normalize_name, normalize_phone
 
+class AppError(Exception):
+    """Represents an intentional, user-facing application error."""
+    pass
+
 class DatabaseManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -48,7 +52,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS action_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 admin_id INTEGER NOT NULL,
-                customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+                customer_id INTEGER NOT NULL,
                 action_type TEXT CHECK(action_type IN ('change_phone', 'add_customer', 'add_transaction', 'delete_customer', 'rename_customer')),
                 payload TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -84,28 +88,73 @@ class DatabaseManager:
             rows = await cur.fetchall()
             return [dict(row) for row in rows]
 
-    async def add_customer(self, fullname: str, phone: Optional[str], admin_id: int) -> int:
+    async def restore_customer(self, temp_id, customer_info: dict):
+        try:
+            required = {'customer_id', 'created_at', 'balance'}
+            missing = required - customer_info.keys()
+            if missing:
+                raise AppError(f"Missing required keys: {', '.join(missing)}")
+            customer_info.update({'temp_id':temp_id})
+            cursor = await self.conn.execute(
+                """
+                UPDATE customers
+                SET id = :customer_id, created_at = :created_at, balance = :balance
+                WHERE id = :temp_id
+                """,
+                customer_info,
+            )
+            is_restored = cursor.rowcount
+            if not is_restored:
+                raise AppError("deleted Customer can not be restored")
+            return customer_info
+        except AppError:
+            raise
+
+        except Exception as exc:
+            self.logger.exception(f"{exc}")
+            raise Exception(f"Unexpected Error: {exc}") from exc
+
+    async def add_customer(self, fullname: str, phone: Optional[str], admin_id: int, with_logging=True, old_info=None) -> int:
         """
         Insert a new customer record and return its generated ID.
+        **old_info**: must include (customer_id, created_at, balance) of restored customer. only used to undo customer_delete command
         """
         try:
             cursor = await self.conn.execute(
                 """
-                INSERT INTO customers (fullname, phone, admin_id, balance)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO customers (fullname, phone, admin_id)
+                VALUES (?, ?, ?)
                 RETURNING id;
                 """,
-                (fullname, phone, admin_id, 0.0),
+                (fullname, phone, admin_id),
             )
-            row = await cursor.fetchone()
-            await self.conn.commit()
+            customer_id = (await cursor.fetchone())['id']
+            if with_logging:
+                await self.add_action_log('add_customer', customer_id, admin_id, {})
+            undo_details = None
+            if old_info:
+                customer_info = await self.restore_customer(customer_id, old_info)
 
-            return row
+                undo_details = {
+                    "Full Name": fullname,
+                    "Phone": phone,
+                    "balance": customer_info['balance']
+                }
+
+            await self.conn.commit()
+            customer_id = customer_id if old_info == None else old_info['customer_id']
+            return {'customer_id':customer_id, 'undo_details': undo_details}
 
         except aiosqlite.IntegrityError as err:
-            raise aiosqlite.IntegrityError(
+            await self.conn.rollback()
+            raise AppError(
                 f"Customer named '{fullname}' already exists"
             ) from err
+
+        except Exception as exc:
+            self.conn.rollback()
+            self.logger.exception(f"{exc}")
+            raise Exception(f"Unexpected Error: {exc}") from exc
 
     async def get_customer_by_id(self, customer_id: int, admin_id: int) -> Optional[dict]:
         """Retrieve a customer dict by id."""
@@ -121,6 +170,7 @@ class DatabaseManager:
             if row:
                 customer = dict(row)
                 customer['fullname'] = customer.get('fullname')
+                customer['customer_id'] = customer.pop('id')
                 return customer
 
     async def get_customer_summary(self, customer_id: int, admin_id: int) -> dict | None:
@@ -171,11 +221,13 @@ class DatabaseManager:
         return customer_data
 
     async def get_customer_transactions(self, customer_id: int, admin_id: int):
-        return await self.conn.execute_fetchall("""
+        transactions = list(map(lambda row: dict(row),await self.conn.execute_fetchall("""
             SELECT *
             FROM transactions
             WHERE customer_id = ? AND admin_id = ?;
-        """, (customer_id, admin_id))
+        """, (customer_id, admin_id))))
+        
+        return transactions
 
     async def delete_customer(self, customer_id: int, admin_id: int, with_logging):
 
@@ -187,87 +239,150 @@ class DatabaseManager:
                 await self.add_action_log('delete_customer', customer_id, admin_id,logging_info, False)
 
             cur = await self.conn.execute("""
-                DELETE FROM customers WHERE id = ? AND admin_id = ?;
+                DELETE FROM customers WHERE id = ? AND admin_id = ? RETURNING fullname, phone, balance;
             """, (customer_id, admin_id))
-
+            deleted_customer = await cur.fetchone()
             await self.conn.commit()
-            return cur.rowcount
-
+            if cur.rowcount == 0: raise AppError("Customer is NOT deleted successfully. retry later")
+            return deleted_customer
+        except AppError:
+            raise
         except Exception as exc:
             await self.conn.rollback()
-            self.logger.warning(str(exc))
-            raise
+            self.logger.exception(f"{exc}")
+            raise Exception(f"Unexpected Error: {exc}") from exc
 
     async def rename_customer(
-        self, new_name: str, customer_id: int, admin_id: int,
+        self, name: str, customer_id: int, admin_id: int,
         with_logging=True, logging_info: dict = None
     ):
 
         try:
+        
+            customer = await self.get_customer_by_id(customer_id, admin_id)
+            old_name = customer['fullname']
+            if with_logging:
+                await self.add_action_log('rename_customer',customer_id, admin_id, {'new_name': old_name}, with_commit=False)
+
             cursor = await self.conn.execute("""
                 UPDATE customers SET fullname = ? WHERE id = ? AND admin_id = ?;
-                """, (new_name, customer_id, admin_id))
-            if with_logging:
-                customer = await self.get_customer_by_id(customer_id, admin_id)
-                old_name = customer['fullname']
-                await self.add_action_log('rename_customer',customer_id, admin_id, {'old_name': old_name}, with_commit=False)
+                """, (name, customer_id, admin_id))
 
             await self.conn.commit()
-            return cursor.rowcount
-
+            if cursor.rowcount == 0: raise AppError("Customer is NOT renamed. retry later!")
+            return old_name
         except aiosqlite.IntegrityError as exc:
-            raise aiosqlite.IntegrityError(
-                f"Customer name '{new_name}' already exists"
+            raise AppError(
+                f"Customer name '{name}' already exists"
             ) from exc
+        except AppError:
+            raise
         except Exception as exc:
             self.conn.rollback()
-            self.logger.warning(str(exc))
-            raise
+            self.logger.exception(f"Unexpected Error: {exc}")
+            raise Exception(f"Unexpected Error: {exc}") from exc
 
     async def change_customer_phone(
-        self, new_phone: str, customer_id: int, admin_id: int,
+        self, phone: str, customer_id: int, admin_id: int,
         with_logging=True
     ):
         try:
+            customer = await self.get_customer_by_id(customer_id, admin_id)
+            old_phone = customer['phone']
             if with_logging:
-                customer = await self.get_customer_by_id(customer_id, admin_id)
-                old_phone = customer['phone']
-                await self.add_action_log('change_phone', customer_id, admin_id,{'old_phone': old_phone}, False)
+                await self.add_action_log('change_phone', customer_id, admin_id,{'new_phone': old_phone}, False)
 
             cur = await self.conn.execute("""
-                UPDATE customers SET phone = ? WHERE id = ? AND admin_id = ?;
-            """, (new_phone, customer_id, admin_id))
+                UPDATE customers SET phone = ? WHERE id = ? AND admin_id = ? RETURNING fullname;
+            """, (phone, customer_id, admin_id))
+            fullname = (await cur.fetchone())['fullname']
             await self.conn.commit()
-            return cur.rowcount
-        except Exception:
-            await self.conn.rollback()
+            if cur.rowcount == 0:   raise AppError("Customer's phone can NOT be changed now. retry later")
+            return {'old_phone': old_phone, 'fullname': fullname}
+        except AppError:
             raise
+        except Exception as exc:
+            await self.conn.rollback()
+            self.logger.exception(exc)
+            raise Exception(f"Unexpected Error: {exc}") from exc
 
     # TRANSACTION Methods
-    async def add_transaction(self, amount: float, type_: str, description: str, customer_id: int, admin_id: int) -> int:
-        """Insert transaction and return its id."""
-        if type_ not in ('sale', 'payment'):
-            raise ValueError('Invalid transaction type')
-
-        sign = 1 if type_ == 'payment' else -1
+    async def update_balance(self, amount, type_, customer_id):
+        """**exception**: this method do not commit **automatically**, you have to commit it to save updated state"""
+        if type_ == 'payment':
+            sign = 1
+        elif type_ == 'sale':
+            sign = -1
+        else:
+            raise AppError('invalid transaction type.')
         balance_delta = sign * abs(amount)
 
         # add new transaction + adjust customer balance
-        await self.conn.execute("""
-            UPDATE customers SET balance = balance + ? WHERE id = ?;
+        cursor = await self.conn.execute("""
+            UPDATE customers SET balance = balance + ? WHERE id = ? RETURNING balance, fullname;
         """, (balance_delta, customer_id))
-        cur = await self.conn.execute("""
-            INSERT INTO transactions (amount, type, customer_id, admin_id, description)
-            VALUES (?, ?, ?, ?, ?) RETURNING id, amount, description;
-        """, (amount, type_, customer_id, admin_id, description))
-        transaction = await cur.fetchone()
+        return dict(await cursor.fetchone())
 
-        await self.conn.commit()
+    async def add_transaction(
+        self, amount: float, type_: str, description: str, customer_id: int, admin_id: int,
+        with_commit=True, with_logging=True
+    ) -> dict:
+        """Insert transaction and return created transaction as a dict"""
 
-        return transaction
 
-    async def list_transactions(self, customer_id: int) -> List[dict]:
-        """Return all transactions for a customer."""
+        try:
+            if type_ not in ('sale', 'payment'):
+                raise AppError('Invalid transaction type')
+            
+            await self.update_balance(amount, type_, customer_id)
+
+            cur = await self.conn.execute("""
+                INSERT INTO transactions (amount, type, customer_id, admin_id, description)
+                VALUES (?, ?, ?, ?, ?) RETURNING id;
+            """, (amount, type_, customer_id, admin_id, description))
+            transaction = dict(await cur.fetchone())
+
+            if with_logging:
+                await self.add_action_log('add_transaction', customer_id, admin_id, transaction, False) # bookmark: do not store the entire transaction in log...
+            if with_commit:
+                await self.conn.commit()
+            return transaction
+        except AppError:
+            raise
+        except Exception as exc:
+            self.logger.exception(str(exc))
+            await self.conn.rollback()
+            raise Exception(f"Unexpected Error: {exc}") from exc
+
+    async def restore_transactions(self, transactions):
+        try:
+            cur = await self.conn.executemany("""
+                    INSERT INTO transactions (id, amount, customer_id, admin_id, description, type, created_at)
+                    VALUES (:id, :amount, :customer_id, :admin_id, :description, :type, :created_at);
+                """, transactions)
+            await self.conn.commit()
+        except Exception as exc:
+            self.logger.exception(str(exc))
+            await self.conn.rollback()
+            raise Exception(f"Unexpected Error: {exc}") from exc
+
+    async def delete_transaction(self, transaction_id):
+        try:
+            cur = await self.conn.execute("""
+                    DELETE FROM transactions
+                    WHERE id = ? RETURNING *;
+                """, (transaction_id,))
+            transaction = dict(await cur.fetchone())
+            amount, customer_id = transaction['amount'],  transaction['customer_id']
+            type_ = 'payment' if transaction['type'] == 'sale' else 'sale'
+            updated_customer = await self.update_balance(amount, type_, customer_id)
+            await self.conn.commit()
+            transaction.update(updated_customer)
+            return transaction
+        except Exception as exc:
+            self.logger.exception(str(exc))
+            await self.conn.rollback()
+            raise Exception(f"Unexpected Error: {exc}") from exc
 
     # ACTION_LOG Methods
     async def add_action_log(self, action_type: str, customer_id: int, admin_id: int, action_info: dict, with_commit: bool = True):
@@ -293,19 +408,21 @@ class DatabaseManager:
                 WHERE created_at < datetime('now', '-30 day');
             """)
         await self.conn.commit()
-    async def undo_last_action(self):
+
+    async def undo_last_action(self, admin_id):
         cur = await self.conn.execute("""
             SELECT * FROM action_logs
             WHERE admin_id = ?
             ORDER BY id DESC
             LIMIT 1;
-        """)
+        """, (admin_id,))
         log = await cur.fetchone()
         await self.conn.execute("DELETE FROM action_logs WHERE id = ?", (log['id'],))
 
         await self.conn.commit()
 
-        return log
+        return dict(log)
+
     async def close(self) -> None:
         """Close DB connection."""
         if self.conn is not None:
