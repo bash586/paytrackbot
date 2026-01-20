@@ -50,13 +50,16 @@ def main():
         CommandHandler('start', handlers.start),
         CommandHandler('search', handlers.search),
         CallbackQueryHandler(handlers.select_customer_command, pattern=r"^customer_select:"),
+        CallbackQueryHandler(handlers.history_callback, pattern=r"^history:"),
+        CallbackQueryHandler(handlers.report_callback, pattern=r"^report:"),
         CommandHandler("summary", handlers.summary),
         CommandHandler("addcustomer", handlers.add_customer_command),
-        CommandHandler("addtransaction", handlers.add_transaction),
+        CommandHandler("addtransaction", handlers.add_transaction_command),
         CommandHandler("delete", handlers.delete_customer_command),
         CommandHandler("rename", handlers.rename_customer_command),
         CommandHandler("changephone", handlers.change_phone_command),
-        CommandHandler("undo", handlers.undo_last_action),
+        CommandHandler("undo", handlers.undo),
+        CommandHandler("report", handlers.report_command),
     ]
 
     application.add_handlers(all_handlers)
