@@ -730,7 +730,9 @@ class DatabaseManager:
         Returns:
             {
                 "items": List[Dict[str, Any]],
-                "next_cursor": Optional[Tuple[float, int]],
+                "next_cursor": str,
+                "current_cursor": str,
+                "prev_cursor": None,
                 "has_more": bool,
             }
         """
@@ -774,7 +776,7 @@ class DatabaseManager:
 
         params: list[Any] = [admin_id]
         cursor_clause = ""
-
+        self.logger.warning('cursor: %s', cursor)
         if cursor is not None:
             last_balance, last_id = cursor
             cursor_clause = f"AND ({cfg['cursor_cmp']})"
@@ -791,94 +793,107 @@ class DatabaseManager:
         next_cursor = None
         if items:
             last = items[-1]
-            next_cursor = f"{last["balance"]}, {last["id"]}"
+            next_cursor = f"{last["balance"]},{last["id"]}"
+        current_cursor = f"{cursor[0]},{cursor[1]}" if cursor else None
 
         return {
             "items": items,
+            "prev_cursor": None,    # set by navigator
+            "cur_cursor": current_cursor,
             "next_cursor": next_cursor,
             "has_more": has_more,
         }
-
 
     async def fetch_transactions_page(
         self,
         customer_id: int,
         admin_id: int,
         limit: int = 5,
-        before_id: Optional[int] = None,
+        cursor: Optional[int] = None,  # rename before_id → cursor for consistency
     ) -> Dict[str, Any]:
-        """Fetch a page of transactions for a customer using an id-based cursor.
-
-        Returns a dict with keys: items (List[Transaction]), next_cursor (Optional[int]),
-        has_more (bool).
         """
+        Fetch a page of transactions using id-based cursor pagination.
+
+        Cursor format:
+            last_id
+
+        Returns:
+            {
+                "items": List[Dict[str, Any]],
+                "prev_cursor": None,
+                "cur_cursor": Optional[str],
+                "next_cursor": Optional[str],
+                "has_more": bool,
+            }
+        """
+
         self.logger.debug(
-            "Fetching transactions page for customer=%s admin=%s before_id=%s limit=%s",
+            "Fetching transactions page customer_id=%s admin_id=%s cursor=%s limit=%s",
             customer_id,
             admin_id,
-            before_id,
+            cursor,
             limit,
         )
-        if before_id is None:
-            query = """
-                SELECT * FROM transactions
-                WHERE customer_id = ? AND admin_id = ?
-                ORDER BY id DESC
-                LIMIT ?;
-            """
-            params = (customer_id, admin_id, limit + 1)
-        else:
-            query = """
-                SELECT * FROM transactions
-                WHERE customer_id = ? AND admin_id = ? AND id < ?
-                ORDER BY id DESC
-                LIMIT ?;
-            """
-            params = (customer_id, admin_id, before_id, limit + 1)
 
-        rows = await self.conn.execute_fetchall(query, params)
-        rows = [dict(r) for r in rows]
-        has_more = len(rows) > limit
-        if has_more:
-            rows = rows[:limit]
-        next_cursor = rows[-1]['id'] if rows else None
-        return {"items": rows, "next_cursor": next_cursor, "has_more": has_more}
-
-    async def fetch_action_logs_page(
-        self,
-        admin_id: int,
-        limit: int = 5,
-        before_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Fetch a page of action logs for an admin using an id-based cursor.
-
-        Returns a dict with keys: items (List[ActionLog]), next_cursor (Optional[int]), has_more (bool).
+        sql = """
+            SELECT *
+            FROM transactions
+            WHERE customer_id = ?
+            AND admin_id = ?
+            {cursor_clause}
+            ORDER BY id DESC
+            LIMIT ?;
         """
-        self.logger.debug("Fetching action logs page for admin=%s before_id=%s limit=%s", admin_id, before_id, limit)
-        if before_id is None:
-            query = """
-                SELECT * FROM action_logs
-                WHERE admin_id = ?
-                ORDER BY id DESC
-                LIMIT ?;
-            """
-            params = (admin_id, limit + 1)
-        else:
-            query = """
-                SELECT * FROM action_logs
-                WHERE admin_id = ? AND id < ?
-                ORDER BY id DESC
-                LIMIT ?;
-            """
-            params = (admin_id, before_id, limit + 1)
 
-        rows = await self.conn.execute_fetchall(query, params)
-        rows = [dict(r) for r in rows]
+        params: list[Any] = [customer_id, admin_id]
+        cursor_clause = ""
+
+        if cursor is not None:
+            cursor_clause = "AND id < ?"
+            params.append(cursor)
+
+        query = sql.format(cursor_clause=cursor_clause)
+        params.append(limit + 1)
+
+        rows = await self.conn.execute_fetchall(query, tuple(params))
+
+        items = [dict(r) for r in rows[:limit]]
         has_more = len(rows) > limit
-        if has_more:
-            rows = rows[:limit]
-        next_cursor = rows[-1]['id'] if rows else None
-        return {"items": rows, "next_cursor": next_cursor, "has_more": has_more}
+
+        next_cursor = None
+        if items:
+            last = items[-1]
+            next_cursor = str(last["id"])
+
+        current_cursor = str(cursor) if cursor is not None else None
+
+        return {
+            "items": items,
+            "prev_cursor": None,      # set by navigator
+            "cur_cursor": current_cursor,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
+
+    async def fetch_overall_report(self, admin_id: int):
+
+        cursor = await self.conn.execute("""
+            SELECT
+                TOTAL(CASE WHEN balance > 0 THEN balance END) AS overpaid_total,
+                TOTAL(CASE WHEN balance < 0 THEN ABS(balance) END) AS due_total
+            FROM customers;
+        """)
+        row = await cursor.fetchone()
+        overpaid_total = row['overpaid_total']
+        due_total = row['due_total']
+
+        overall_total = overpaid_total - due_total
+
+        return {
+            'due_total': due_total,
+            'overpaid_total': overpaid_total,
+            'overall_total': overall_total,
+        }
 
     async def close(self) -> None:
         """Close DB connection."""

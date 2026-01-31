@@ -3,7 +3,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from telegram.ext import (
-    ApplicationBuilder, CallbackQueryHandler, CommandHandler, PicklePersistence, PersistenceInput, MessageHandler
+    ApplicationBuilder, filters, ConversationHandler, CallbackQueryHandler, CommandHandler, PicklePersistence, PersistenceInput, MessageHandler
 )
 from bot import handlers
 from bot.database_manager import DatabaseManager
@@ -45,12 +45,12 @@ def main():
         .build()
     )
 
-
+    ASK_QUERY = 0
+    # CallbackQueryHandler(handlers.cancel_search, pattern=r"^cancel_waiting_search_query:$")
     all_handlers = [
         CommandHandler('start', handlers.start),
-        CommandHandler('search', handlers.search),
+        CommandHandler('search', handlers.search_command),
         CallbackQueryHandler(handlers.select_customer_command, pattern=r"^customer_select:"),
-        CallbackQueryHandler(handlers.history_callback, pattern=r"^history:"),
         CallbackQueryHandler(handlers.report_callback, pattern=r"^report:"),
         CommandHandler("summary", handlers.summary),
         CommandHandler("addcustomer", handlers.add_customer_command),
@@ -60,6 +60,15 @@ def main():
         CommandHandler("changephone", handlers.change_phone_command),
         CommandHandler("undo", handlers.undo),
         CommandHandler("report", handlers.report_command),
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(handlers.ask_search_query, pattern=r"^wait_search_query:")],
+            states={
+                ASK_QUERY: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.recieve_search_query)
+                ]
+            },
+            fallbacks=[],
+        ),
     ]
 
     application.add_handlers(all_handlers)

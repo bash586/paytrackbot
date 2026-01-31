@@ -23,6 +23,7 @@
 | undo action        | `/undo`                         | enables admin to undo selected action           |
 
 ### Check List:
+* before doing any updates that require updating balances -> remove previous report messages
 * add pager-view of transactions and history of commands made by admin (linked-list based implementation)
 * add search_transaction command displaying all details of related transactions
 * show user a loader until transaction is commited

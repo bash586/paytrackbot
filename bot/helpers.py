@@ -3,7 +3,7 @@ from functools import reduce
 import re
 from typing import List, Optional
 from config import *
-from bot.types import SelectedCustomer
+from bot.types import SelectedCustomer, Transaction
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +93,35 @@ Recent Transactions:
 </blockquote>
     """
 
-def format_transaction(transaction: dict, is_last: bool) -> str:
-    return "\n".join([
-        f"<b>{'💸' if transaction['type'] == 'sale' else '💰'} {transaction['amount']:.1f}</b>",
-        f"                  {transaction['created_at']}",
-        '  ────୨ৎ────' if not is_last 
-        else '────୨ৎ────\n\n   【 💸 = sale │ 💰 = payment 】 \n ',
-        ' '
-    ])
+def format_transaction(
+    transaction: Transaction,
+    is_last: bool,
+    include_details: bool = False,
+) -> str:
+    parts: list[str] = []
+
+    parts.append(
+        f"<b>{'💸' if transaction['type'] == 'sale' else '💰'} "
+        f"{transaction['amount']:.1f}</b>\n"
+    )
+
+    parts.append(f"                    <b>{transaction['created_at']}</b>\n")
+    if include_details and transaction['description']:
+        parts.append(
+            f"\n<b>Description:</b>  {transaction['description']}\n"
+        )
+
+
+    if not is_last:
+        parts.append("  ────୨ৎ────\n")
+    else:
+        parts.append(
+            "────୨ৎ────\n\n"
+            "   【 💸 = sale │ 💰 = payment 】 \n"
+        )
+
+    return "".join(parts)
+
 
 def format_enum_members(enum_cls) -> str:
     return ",".join(
