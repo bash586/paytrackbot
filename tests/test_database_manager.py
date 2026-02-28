@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from bot.database_manager import DatabaseManager, AppError
-from bot.types import TransactionType, ActionType
+from services.database_service import DatabaseManager, AppError
+from utils.types import TransactionType, ActionType
 
 
 @pytest.mark.asyncio

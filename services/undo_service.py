@@ -1,5 +1,5 @@
-from bot.database_manager import DatabaseManager
-from bot.helpers import get_selected_customer, set_selected_customer, update_context
+from services.database_service import DatabaseManager
+from utils.utils import get_selected_customer, set_selected_customer, update_context
 
 async def execute_undo(db: DatabaseManager, action_type: str, payload: dict, user_data):
     inverse = {
@@ -54,12 +54,13 @@ async def undo_add_transaction(db:DatabaseManager, user_data, payload):
 def format_undo_msg(details: dict, action_type):
     print(details)
     undo_details = "\n".join(
-        f" → <b>{k}:</b> {details[k]}"
+        f"  ■ <b>{k}:</b> {details[k]}"
         for k in details
     )
 
     return "\n".join([
-        "<b>Undo Complete</b>",
-        f"The <b>{action_type}</b> command has been cancelled.",
+        "<b>「✦ Undo Complete ✦」</b>",
+        "    ─•────",
+        f"● The <b>{action_type}</b> command has been cancelled.",
         undo_details,
 ])
