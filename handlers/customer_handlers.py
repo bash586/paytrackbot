@@ -1,25 +1,21 @@
 # Customer-related Telegram handlers
 from typing import Dict, List, Optional
+from aiosqlite import Connection
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from utils.utils import (
     validate_selected_customer,
-    get_selected_customer,
     get_args,
-    normalize_fullname,
-    normalize_phone,
-    normalize_name,
-    update_context,
-    reset_search_context,
-    reset_command_context,
+    format_transaction,
+    format_summary_html
 )
-from utils.utils import format_transaction, format_summary_html
+from handlers.context_manager import clear_conversation_ctx, get_selected_customer, set_selected_customer, update_context
 from services.customer_service import (
-    select_customer,
-    add_customer,
     delete_customer,
+    get_customer_summary,
     rename_customer,
     change_phone,
+    get_customer_transactions,
 )
 from services.database_service import DatabaseManager
 from services.customer_repository import CustomerRepository
@@ -27,6 +23,7 @@ from services.report_repository import ReportRepository
 from utils.types import Customer
 from config import (
     CANCEL_KEYBOARD,
+    DATABASE_PATH,
     RECEIVE_ARGS,
     NO_SELECTED_CUSTOMER_WARNING,
     FEEDBACK_AVAILABLE_COMMANDS,
@@ -46,10 +43,12 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
     customer_id = selected_customer['customer_id']
-    db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
-    customer_repo = CustomerRepository(db_manager.conn)
-    summary = await customer_repo.get_customer_summary(customer_id, admin_id)
+    summary = await get_customer_summary(customer_id, admin_id)
+    if not summary:
+        logger.error(f"Failed to fetch customer summary {customer_id}")
+        await update.effective_message.reply_text("Something went wrong. Please try again later.")
+        return
     recent = summary['recent']
     recent_actions = []
     for i in range(len(recent)):
@@ -67,6 +66,7 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
     try:
         query_parts = query.data.split(":")
         if len(query_parts) < 2:
+            logger.warning(f"Invalid selection format: {query.data}")
             await query.edit_message_text("Invalid selection format")
             return
         customer_id = int(query_parts[1])
@@ -74,23 +74,34 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Failed to parse customer selection: {exc}")
         await query.edit_message_text("Invalid selection format")
         return
+
     admin_id = update.effective_user.id
-    db_manager: DatabaseManager = context.bot_data['db_manager']
-    selected_customer = await select_customer(customer_id, admin_id, db_manager, context.user_data)
+    from services.customer_service import get_customer
+    selected_customer = await get_customer(customer_id, admin_id)
     is_valid, error_msg = validate_selected_customer(selected_customer)
     if not is_valid:
-        logger.warning(f"Customer validation failed: {error_msg} (customer_id={customer_id})")
+        logger.error(f"Customer validation failed: {error_msg} (customer_id={customer_id})")
         await query.edit_message_text("Customer not found or was deleted")
         return
+    set_selected_customer(
+            context.user_data,
+            {k: selected_customer[k] for k in ("customer_id", "fullname", "balance")}
+    )
+    # Handle transaction report mode
     if len(query_parts) > 2:
         mode = query_parts[2]
         if mode == 'transactions_report':
-            report_repo = ReportRepository(db_manager.conn)
-            page = await report_repo.fetch_transactions_page(customer_id, admin_id, 5)
+            page = await get_customer_transactions(customer_id, admin_id, limit=5)
+            if not page:
+                logger.error(f"Failed to fetch transactions for customer {customer_id}")
+                await query.edit_message_text("Unable to fetch transactions. Please try again.")
+                return
+
             items: Optional[List[Customer]] = page['items']
             if not items:
-                await query.edit_message_text("No Transactions Found.\n")
+                await query.edit_message_text("No Transactions Found.")
                 return
+
             transactions_text = []
             for i, transaction in enumerate(items):
                 transactions_text.append(format_transaction(transaction, i == len(items) - 1, include_details=True))
@@ -102,186 +113,111 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
             buttons.append([InlineKeyboardButton("←", callback_data=f"report:main:0:0:backwards")])
             await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
             return
+
+    # Handle addtransaction command
     feedback_msg = f"Selected <b>{selected_customer['fullname'].upper()}</b>\n{FEEDBACK_AVAILABLE_COMMANDS}"
     active_command = context.user_data.get('active_command')
     if active_command and active_command == 'addtransaction':
-        args = context.user_data.get('active_command_args','')
-        if len(args) > 0:
-            # Process stored args for transaction
-            res = await add_transaction(get_args(args), update, context)
+        args = context.user_data.get('active_command_args', '')
+        if args and len(args) > 0:
+            from services.customer_service import add_transaction
+            res = await add_transaction(get_args(args), admin_id, customer_id, selected_customer['fullname'])
             if res['ok']:
                 feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
                 await update.effective_message.reply_text(text=feedback, parse_mode='HTML')
             else:
                 feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
                 await update.effective_message.reply_text(text="Failed to add new Transaction...\n" + feedback, parse_mode='HTML')
-            reset_search_context(context.user_data)
-            reset_command_context(context.user_data)
+            clear_conversation_ctx(context.user_data)
             return
-        await update.effective_message.reply_text(PROMPT_TRANSACTION_DETAILS, reply_markup=CANCEL_KEYBOARD, parse_mode="HTML")
+        await update.effective_message.reply_text(
+            PROMPT_TRANSACTION_DETAILS, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode="HTML"
+        )
         return RECEIVE_ARGS
+    
     await update.effective_message.reply_html(feedback_msg)
-
-async def add_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a new customer to the database."""
-    args = get_args(update.effective_message.text)
-    if len(args) < 2:
-        err_msg = INVALID_USAGE['addcustomer']
-        await update.effective_message.reply_html(err_msg)
-        return
-    fullname, phone = normalize_fullname(args[0]), normalize_phone(args[1])
-    admin_id = update.effective_user.id
-    db_manager: DatabaseManager = context.bot_data['db_manager']
-    result = await add_customer(fullname, phone, admin_id, db_manager, context.user_data, True)
-    if not result['ok']:
-        feedback = "\n".join(result['msg']) if len(result['msg']) > 0 else ""
-        await update.effective_message.reply_html(f"Failed to add customer:\n{feedback}")
-        return
-    feedback_msg = "\n".join(result['msg']) if len(result['msg']) > 0 else ""
-    await update.effective_message.reply_html(text=f"{feedback_msg}\n{FEEDBACK_AVAILABLE_COMMANDS}")
 
 async def delete_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete a customer from the database."""
     selected_customer = get_selected_customer(context.user_data)
     if not selected_customer:
+        logger.warning("Delete customer called without valid customer")
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
-    db_manager: DatabaseManager = context.bot_data['db_manager']
+
     admin_id = update.effective_user.id
     customer_id = selected_customer['customer_id']
     customer_name = selected_customer['fullname']
-    result = await delete_customer(customer_id, admin_id, db_manager, context.user_data)
+
+    result = await delete_customer(customer_id, admin_id)
     if not result['ok']:
-        msg_err = result['error']
-        if msg_err.startswith('Error:'):
-            await update.effective_message.reply_text(f"Error: {msg_err}")
-        elif msg_err.startswith('Unknown Error:'):
-            await update.effective_message.reply_text(f"Error: Customer is not Deleted... retry later")
+        logger.error(f"Failed to delete customer {customer_id}: {result['error']}")
+        await update.effective_message.reply_text(f"Error: {result['error']}")
         return
+
+    # Clear from context
+    current_customer = get_selected_customer(context.user_data)
+    if current_customer and current_customer["customer_id"] == customer_id:
+        set_selected_customer(context.user_data, None)
+
     await update.effective_message.reply_text(f"Customer {customer_name} is deleted successfully")
 
 async def rename_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Rename a customer."""
     selected_customer = get_selected_customer(context.user_data)
     if not selected_customer:
+        logger.debug("Rename customer called without valid customer")
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
+
     args = get_args(update.effective_message.text)
     if len(args) == 0:
+        logger.debug("Rename customer called without arguments")
         err_msg = INVALID_USAGE['rename']
         await update.effective_message.reply_html(err_msg)
         return
+
     customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
-    db_manager: DatabaseManager = context.bot_data['db_manager']
     new_name = args[0]
-    result = await rename_customer(new_name, customer_id, admin_id, db_manager, context.user_data)
-    new_name = result['new name']
+
+    result = await rename_customer(new_name, customer_id, admin_id)
     if not result['ok']:
-        err_msg = result['error']
-        await update.effective_message.reply_text(err_msg)
+        logger.error(f"Failed to rename customer {customer_id}: {result['error']}")
+        await update.effective_message.reply_text(result['error'])
         return
-    await update.effective_message.reply_text(f"Customer has been successfully renamed To:\n {new_name.upper()}")
+
+    # Update context with new name
+    updated_customer = get_selected_customer(context.user_data)
+    if updated_customer and updated_customer.get("customer_id") == customer_id:
+        update_context(context.user_data, fullname=result['new name'])
+    
+    await update.effective_message.reply_text(f"Customer has been successfully renamed To:\n {result['new name'].upper()}")
 
 async def change_phone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change a customer's phone number."""
     selected_customer = get_selected_customer(context.user_data)
     if not selected_customer:
+        logger.warning("Change phone called without valid customer")
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
+    
     args = get_args(update.effective_message.text)
     if len(args) == 0:
+        logger.warning("Change phone called without arguments")
         err_msg = INVALID_USAGE['changephone']
         await update.effective_message.reply_html(err_msg)
         return
+    
     new_phone = args[0]
     customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
-    db_manager: DatabaseManager = context.bot_data['db_manager']
-    result = await change_phone(new_phone, customer_id, admin_id, db_manager, context.user_data, True)
+    
+    result = await change_phone(new_phone, customer_id, admin_id)
     if not result['ok']:
-        err_msg = result['error']
-        await update.effective_message.reply_text(err_msg)
+        logger.error(f"Failed to change phone for customer {customer_id}: {result['error']}")
+        await update.effective_message.reply_text(result['error'])
         return
-    await update.effective_message.reply_text(f'Customer Phone Has Been Changed To:\n {new_phone.upper()}')
-
-
-async def add_transaction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a transaction for the selected customer."""
-    selected_customer = get_selected_customer(context.user_data)
-    if not selected_customer:
-        await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
-        return
-    args = get_args(update.effective_message.text)
-    description = "" if len(args)<2 else args[1]
-    try:
-        amount = float(normalize_name(args[0]))
-        type_ = 'sale' if amount < 0 else 'payment'
-        amount = abs(amount)
-    except ValueError:
-        await update.effective_message.reply_html("Invalid <b>amount</b> value: amount must be a number")
-        return
-    db_manager: DatabaseManager = context.bot_data['db_manager']
-    admin_id = update.effective_user.id
-    customer_id = selected_customer['customer_id']
-    fullname = selected_customer['fullname']
-    try:
-        from services.transaction_repository import TransactionRepository
-        trans_repo = TransactionRepository(db_manager.conn)
-        await trans_repo.add_transaction(amount, type_, description, customer_id, admin_id)
-    except Exception as exc:
-        await update.effective_message.reply_text("Something went wrong. Please try again later.")
-        return
-    from services.customer_repository import CustomerRepository
-    customer_repo = CustomerRepository(db_manager.conn)
-    new_balance = (await customer_repo.get_customer_by_id(customer_id, admin_id))['balance']
-    update_context(context.user_data, balance=new_balance)
-    feedback_msg = '\n'.join([f"「 ✦<b>{fullname.upper()}</b>✦ 」", "  ─•────", f"Successfully added <b>{type_.upper()}</b> of <b>{amount:.2f}</b>", f"<b>Description: </b> {description}" if len(args)>2 else '', f"\n<b>Account Balance: {new_balance:.2f}</b>",])
-    await update.effective_message.reply_html(feedback_msg)
-
-
-async def add_transaction(args: List, update, context):
-    """Process and add a transaction."""
-    res = {'ok': True, 'msg': [], 'log_msg': []}
-    description = "" if len(args) < 2 else args[1]
-    try:
-        amount = float(normalize_name(args[0]))
-        type_ = 'sale' if amount < 0 else 'payment'
-        amount = abs(amount)
-    except ValueError:
-        res["ok"] = False
-        res["msg"].append("Invalid <b>amount</b> value: amount must be a number")
-        return res
     
-    db_manager: DatabaseManager = context.bot_data['db_manager']
-    admin_id = update.effective_user.id
-    selected_customer = get_selected_customer(context.user_data)
-    customer_id = selected_customer['customer_id']
-    fullname = selected_customer['fullname']
-    amount = float(amount)
-    res['log_msg'].append((f"adding a transaction for user with id :{admin_id}\n"
-                          "passed arguments:\n"
-                          f"amount:{amount}\n"
-                          f"description:\n{description}"))
-    try:
-        from services.transaction_repository import TransactionRepository
-        trans_repo = TransactionRepository(db_manager.conn)
-        await trans_repo.add_transaction(amount, type_, description, customer_id, admin_id)
-    except Exception as exc:
-        res["ok"] = False
-        res["msg"].append("Something went wrong. Please try again later.")
-        res['log_msg'].append("error: " + str(exc))
-        return res
-    
-    from services.customer_repository import CustomerRepository
-    customer_repo = CustomerRepository(db_manager.conn)
-    new_balance = (await customer_repo.get_customer_by_id(customer_id, admin_id))['balance']
-    update_context(context.user_data, balance=new_balance)
-    desc = f"<b>Description: </b> {description}" if len(args) > 1 else ''
-    feedback_msg = (f"「 ✦<b>{fullname.upper()}</b>✦ 」\n"
-                    "  ─•────\n"
-                    f"Successfully added <b>{type_.upper()}</b> of <b>{amount:.2f}</b>\n"
-                    f"{desc}"
-                    f"\n<b>Account Balance: {new_balance:.2f}</b>")
-    res["msg"].append(feedback_msg)
-    return res
+    await update.effective_message.reply_text(f"Customer Phone Has Been Changed To:\n {result['proposed_phone'].upper()}")
+

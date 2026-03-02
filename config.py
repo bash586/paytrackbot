@@ -30,7 +30,10 @@ INVALID_USAGE = {
     "changephone": '\n'.join([
         "<b>Incorrect Command Usage...</b>",
         "Usage: <code>/changephone newphone*</code>",
-    ])
+    ]),
+    "search": ("Please use this format:\n"
+    "   <b>[SearchQuery]</b>\n"
+    "   <b>[Limit]</b>                   (default 5)\n")
     
 }
 
@@ -39,10 +42,11 @@ INVALID_USAGE = {
 # ---------------------------------------------------------------------------
 
 PROMPT_TRANSACTION_DETAILS = (
-    "To proceed, please <b>enter transaction details ...</b>\n\n"
+    "<b>You are adding a transaction for {customer_fullname}...</b>\n\n"
     "Please use this format:\n"
-    "   <b>[Amount]</b>\n"
-    "   <b>[Description]</b>\n"
+    "   <b>[±amount]</b>\n"
+    "   <b>[Description]</b>\n\n"
+    "  NOTE:  <b>(+)</b> : PAYMENT | <b>(-)</b> : SALE "
 )
 
 PROMPT_NEW_CUSTOMER_INFO = (

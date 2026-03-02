@@ -38,10 +38,9 @@ class ActionLogRepository:
                 """,
                 (action_type.value, admin_id, customer_id, json.dumps(payload)),
             )
-            await self.conn.commit()
+            # await self.conn.commit()
             action_id = cursor.lastrowid
             
-            from services.database_service import DatabaseManager
             logger.info(
                 "Action log inserted: action_type=%s customer_id=%s admin_id=%s",
                 action_type.value,
@@ -50,7 +49,7 @@ class ActionLogRepository:
             )
             return action_id
         except Exception as exc:
-            await self.conn.rollback()
+            # await self.conn.rollback()
             raise exc
 
     async def fetch_last_log(self, admin_id: int) -> Optional[ActionLog]:
@@ -81,18 +80,11 @@ class ActionLogRepository:
 
     async def delete_action_log(self, action_id: int) -> None:
         """Delete an action log entry."""
-        logger.debug("Deleting action log id=%s", action_id)
-        
-        try:
-            await self.conn.execute(
-                "DELETE FROM action_logs WHERE id = ?;",
-                (action_id,),
-            )
-            await self.conn.commit()
-            logger.info("Deleted action log id=%s", action_id)
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+
+        await self.conn.execute(
+            "DELETE FROM action_logs WHERE id = ?;",
+            (action_id,),
+        )
 
     async def clear_old_logs(self, days: int = 30) -> None:
         """Clear action logs older than specified days."""

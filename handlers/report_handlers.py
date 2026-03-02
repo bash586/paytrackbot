@@ -3,8 +3,8 @@
 from typing import Dict, List, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
-from utils.utils import parse_pagination_cursor, get_selected_customer
-from utils.utils import format_transaction
+from utils.utils import parse_pagination_cursor, format_transaction
+from handlers.context_manager import get_selected_customer
 from services.database_service import DatabaseManager
 from services.customer_repository import CustomerRepository
 from services.report_repository import ReportRepository
@@ -14,31 +14,40 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def get_search_results(query, limit, db_manager: DatabaseManager, admin_id: int, mode: Optional[str] = None):
+async def get_search_results(query, limit, admin_id: int, mode: Optional[str] = None):
     """Search customers and return keyboard with results."""
-    customer_repo = CustomerRepository(db_manager.conn)
-    customers = await customer_repo.search_customers(query, limit, admin_id)
+    from services.customer_service import get_search_results_service
+    customers = await get_search_results_service(query, limit, admin_id)
     if not customers:
         return
     mode = '' if not mode else ':' + mode
-    return [[InlineKeyboardButton(customer['fullname'].upper(), callback_data=f"customer_select:{customer['id']}{mode}")] for customer in customers]
-
+    return [
+        [
+            InlineKeyboardButton(customer['fullname'].upper(),
+            callback_data=f"customer_select:{customer['id']}{mode}")
+        ]
+        for customer in customers
+    ]
 
 def init_report_ctx(user_data: Dict, mode: str, msg_id: int, page_index: int):
-    """Initialize report navigator context."""
-    report_navigator = {
-        'backwards': [],
-        'forwards': [],
-        'currently_viewed': None,
-        'mode': mode,
-        'msg_id': msg_id,
-        'page_index': page_index,
-    }
-    user_data['report_navigator'] = report_navigator
+    """Initialize report navigator context for a specific report."""
+    # Use a unique key for each report (mode + msg_id combination)
+    report_key = f"report_nav_{mode}_{msg_id}"
+
+    if report_key not in user_data:
+        user_data[report_key] = {
+            'backwards': [],
+            'currently_viewed': None,
+            'mode': mode,
+            'msg_id': msg_id,
+        }
+    
+    report_navigator = user_data[report_key]
+    report_navigator['page_index'] = page_index
     return report_navigator
 
 
-def generate_report_menu_keyboard():
+def build_report_menu_keyboard():
     """Generate keyboard with report menu options."""
     return [
         [InlineKeyboardButton(text="Due — Payment Needed", callback_data=f"report:{ReportView.DUE_CUSTOMERS.value}:0:1:forwards")],
@@ -48,11 +57,10 @@ def generate_report_menu_keyboard():
     ]
 
 
-async def fetch_next_page(report_navigator: Dict, db_manager: DatabaseManager, direction: str, cursor, mode: str, admin_id: int, customer_id: int = None):
+async def fetch_next_page(report_navigator: Dict, direction: str, cursor, mode: str, admin_id: int, customer_id: int = None):
     """Fetch next page based on navigation direction and properly track history."""
-    report_repo = ReportRepository(db_manager.conn)
     last_viewed_pg = report_navigator.get('currently_viewed')
-    
+
     # When moving forward, save current page info for backward navigation
     if direction == 'forwards' and last_viewed_pg is not None:
         backward_stack = report_navigator.get('backwards', [])
@@ -61,7 +69,7 @@ async def fetch_next_page(report_navigator: Dict, db_manager: DatabaseManager, d
             'next_cursor': last_viewed_pg.get('next_cursor')
         })
         report_navigator['backwards'] = backward_stack
-    
+
     # When moving backward, pop from stack and use that cursor
     if direction == 'backwards':
         backward_stack = report_navigator.get('backwards', [])
@@ -70,21 +78,17 @@ async def fetch_next_page(report_navigator: Dict, db_manager: DatabaseManager, d
             cursor = prev_page_info.get('cursor')
         else:
             cursor = None
-    
+
     page = None
     if mode == ReportView.DUE_CUSTOMERS or mode == ReportView.OVERPAID_CUSTOMERS:
-        page = await report_repo.fetch_balances_page(admin_id, mode, 5, cursor)
-        page = {
-            "items": page[0],
-            "next_cursor": page[1],
-            "has_more": page[2],
-            "current_cursor": cursor,
-        }
+        from services.report_service import fetch_balances_page
+        page = await fetch_balances_page(admin_id, mode, 5, cursor)
     elif mode == ReportView.CUSTOMER_TRANSACTION_HISTORY:
         if not customer_id:
             logger.warning("Unexpected Error: no Customer is selected for transactions report!")
-        page = await report_repo.fetch_transactions_page(customer_id, admin_id, 5, cursor)
-        page['current_cursor'] = cursor  # Track current cursor for history
+            return
+        from services.report_service import fetch_transactions_page
+        page = await fetch_transactions_page(customer_id, admin_id, 5, cursor)
     
     if page:
         report_navigator['currently_viewed'] = page
@@ -103,26 +107,33 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault('report_pages', [])
     _, mode, cursor_str, page_num_str, direction = parts
     msg_id = update.effective_message.message_id
-    report_navigator = context.user_data.get('report_navigator')
+    # Use unique key for each report to preserve history per report
+    report_key = f"report_nav_{mode}_{msg_id}"
+    report_navigator = context.user_data.get(report_key)
+    
     try:
         page_index = int(page_num_str)
     except ValueError as exc:
         await query.edit_message_text("Invalid request parameters")
-        logger.warning(f"Invalid request parameters: " + str(exc))
+        logger.warning(f"Invalid page index: {page_num_str} - {exc}")
         return
-    if (report_navigator is None or (report_navigator['mode'] != mode or report_navigator['msg_id'] != msg_id)):
+    
+    if report_navigator is None:
         report_navigator = init_report_ctx(context.user_data, mode, msg_id, page_index)
+    else:
+        report_navigator['page_index'] = page_index
     report_navigator['page_index'] = page_index
-    db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
     if mode in (ReportView.DUE_CUSTOMERS, ReportView.OVERPAID_CUSTOMERS,):
         is_valid, cursor = parse_pagination_cursor(cursor_str, mode)
         if not is_valid:
+            logger.warning(f"Invalid cursor format for {mode}: {cursor_str}")
             await query.edit_message_text("Invalid request parameters")
             return
-        page = await fetch_next_page(report_navigator, db_manager, direction, cursor, mode, admin_id)
+        page = await fetch_next_page(report_navigator, direction, cursor, mode, admin_id)
         if page is None:
-            keyboard = generate_report_menu_keyboard()
+            logger.warning(f"Failed to fetch page for mode {mode}: page is None")
+            keyboard = build_report_menu_keyboard()
             await query.edit_message_text(text="Select a report to view:", reply_markup=InlineKeyboardMarkup(keyboard))
             return
         items: Optional[List[Customer]] = page['items']
@@ -148,18 +159,23 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
     elif mode == ReportView.OVERALL_SUMMARY:
-        report_repo = ReportRepository(db_manager.conn)
-        totals_dict = await report_repo.fetch_overall_report(admin_id)
-        report_str = (f"<b>✱ Total Customers: {totals_dict['total_customers']}\n\t" 
-                     f"Due: {totals_dict['due_customers']} | Overpaid: {totals_dict['overpaid_customers']}\n\n"
-                     f"✱ Overall Balance: ➺ {totals_dict['total_balance']:.2f}\n"
-                     f"✱ Total Transactions: {totals_dict['total_transactions']}\n</b>")
+        from services.report_service import fetch_overall_summary
+        totals_dict = await fetch_overall_summary(admin_id)
+        report_str = (
+            f"<b>● Overall Balance: {totals_dict['total_balance']:.2f}\n\n"
+            f"● Total Customers: {totals_dict['total_customers']}\n" 
+            f"     ■ Due: {totals_dict['due_customers']}\n"
+            f"     ■ Overpaid: {totals_dict['overpaid_customers']}\n\n"
+            f"● Total Transactions: {totals_dict['total_transactions']}\n</b>")
         buttons = [[InlineKeyboardButton("←", callback_data="report:main:0:0:backwards")]]
-        await query.edit_message_text(report_str, reply_markup=InlineKeyboardMarkup(buttons),parse_mode='HTML')
+        await query.edit_message_text(
+            report_str, reply_markup=InlineKeyboardMarkup(buttons),parse_mode='HTML'
+        )
         return
     elif mode == ReportView.CUSTOMER_TRANSACTION_HISTORY:
         is_valid, cursor = parse_pagination_cursor(cursor_str, mode)
         if not is_valid:
+            logger.warning(f"Invalid cursor format for transaction history: {cursor_str}")
             await query.edit_message_text("Invalid request parameters")
             return
         selected_customer = get_selected_customer(context.user_data)
@@ -167,10 +183,10 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Unexpected Error: no customer is selected")
             return
         customer_id = selected_customer['customer_id']
-        page = await fetch_next_page(report_navigator, db_manager, direction, cursor, ReportView.CUSTOMER_TRANSACTION_HISTORY, admin_id, customer_id)
+        page = await fetch_next_page(report_navigator, direction, cursor, ReportView.CUSTOMER_TRANSACTION_HISTORY, admin_id, customer_id)
         if not page:
-            await query.edit_message_text("Page is not Fetched Correctly. contact the idiot we call 'developer'")
-            logger.warning(f"Transactions Report Page is not Fetched Correctly...")
+            logger.error(f"Failed to fetch transactions page for customer_id={customer_id}, admin_id={admin_id}")
+            await query.edit_message_text("Unable to fetch transactions. Please try again.")
             return
         items: Optional[List[Customer]] = page['items']
         if not items:
@@ -191,14 +207,15 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
         return
     elif mode == "main":
-        keyboard = generate_report_menu_keyboard()
+        keyboard = build_report_menu_keyboard()
         await query.edit_message_text(text="Select a report to view:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     await query.edit_message_text("Invalid View Mode")
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /report command."""
-    keyboard = generate_report_menu_keyboard()
-    await update.effective_message.reply_text(text="Select a report to view:", reply_markup=InlineKeyboardMarkup(keyboard),)
-
-
+    keyboard = build_report_menu_keyboard()
+    await update.effective_message.reply_text(
+        text="Select a report to view:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )

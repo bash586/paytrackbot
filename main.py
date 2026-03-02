@@ -29,19 +29,15 @@ def main():
     )
 
     db = DatabaseManager(DATABASE_PATH)
-    async def on_stop(app):
-        await db.close()
 
     async def on_start(app):
         await db.init_database()
-        app.bot_data["db_manager"] = db
 
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .persistence(persistence)
         .post_init(on_start)
-        .post_shutdown(on_stop)
         .build()
     )
 
@@ -77,7 +73,6 @@ def main():
                 CallbackQueryHandler(handlers.end_conversation, pattern=r"^end_conversation$"),
             ],
         ),
-        CommandHandler("addtransaction", handlers.add_transaction_command),
         CommandHandler("delete", handlers.delete_customer_command),
         CommandHandler("rename", handlers.rename_customer_command),
         CommandHandler("changephone", handlers.change_phone_command),

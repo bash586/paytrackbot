@@ -1,6 +1,8 @@
 """Data access layer for transaction operations."""
 import logging
 from typing import List, Dict, Any, Optional
+from config import DATABASE_PATH
+from services.database_service import DatabaseManager
 from utils.types import Transaction, TransactionType
 
 logger = logging.getLogger(__name__)
@@ -29,25 +31,24 @@ class TransactionRepository:
             customer_id,
             admin_id,
         )
-        
+
         try:
-            cursor = await self.conn.execute(
+            async with await self.conn.execute(
                 """
                 INSERT INTO transactions (amount, type, customer_id, admin_id, description)
                 VALUES (?, ?, ?, ?, ?);
                 """,
                 (amount, type_, customer_id, admin_id, description),
-            )
-            
+            ) as cur:
+                transaction_id = cur.lastrowid
+
             # Update balance
             balance_change = amount if type_ == "payment" else -amount
             await self.conn.execute(
                 "UPDATE customers SET balance = balance + ? WHERE id = ?;",
                 (balance_change, customer_id),
             )
-            
-            await self.conn.commit()
-            transaction_id = cursor.lastrowid
+
             logger.info(
                 "Added transaction id=%s amount=%s type=%s customer_id=%s",
                 transaction_id,
@@ -57,7 +58,6 @@ class TransactionRepository:
             )
             return transaction_id
         except Exception as exc:
-            await self.conn.rollback()
             raise exc
 
     async def get_customer_transactions(
@@ -93,11 +93,12 @@ class TransactionRepository:
         logger.debug("Deleting transaction id=%s", transaction_id)
         
         # Get transaction details
+        db = DatabaseManager(DATABASE_PATH)
         async with self.conn.execute(
             "SELECT customer_id, amount, type FROM transactions WHERE id = ?;",
             (transaction_id,),
-        ) as cursor:
-            transaction = await cursor.fetchone()
+        ) as cur:
+            transaction = await cur.fetchone()
 
         if not transaction:
             raise Exception(f"Transaction {transaction_id} not found")
@@ -106,25 +107,18 @@ class TransactionRepository:
         amount = transaction["amount"]
         trans_type = transaction["type"]
 
-        try:
-            await self.conn.execute(
-                "DELETE FROM transactions WHERE id = ?;",
-                (transaction_id,),
-            )
-            
-            # Reverse balance update
-            balance_change = -(amount if trans_type == "payment" else -amount)
-            await self.conn.execute(
-                "UPDATE customers SET balance = balance + ? WHERE id = ?;",
-                (balance_change, customer_id),
-            )
-            
-            await self.conn.commit()
-            logger.info("Deleted transaction id=%s", transaction_id)
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+        await self.conn.execute(
+            "DELETE FROM transactions WHERE id = ?;",
+            (transaction_id,),
+        )
+        # update customer's balance
+        balance_change = -(amount if trans_type == "payment" else -amount)
+        await self.conn.execute(
+            "UPDATE customers SET balance = balance + ? WHERE id = ?;",
+            (balance_change, customer_id),
+        )
 
+        logger.info("Deleted transaction id=%s", transaction_id)
         return {
             "Removed Transaction": f"{amount} {trans_type}",
             "Customer id": customer_id,
@@ -159,25 +153,20 @@ class TransactionRepository:
         """Restore previously deleted transactions."""
         logger.debug("Restoring %d transactions", len(customer_transactions))
         
-        try:
-            for transaction in customer_transactions:
-                await self.conn.execute(
-                    """
-                    INSERT INTO transactions (id, amount, type, customer_id, admin_id, description, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        transaction["id"],
-                        transaction["amount"],
-                        transaction["type"],
-                        transaction["customer_id"],
-                        transaction["admin_id"],
-                        transaction["description"],
-                        transaction["created_at"],
-                    ),
+        for transaction in customer_transactions:
+            await self.conn.execute(
+                """
+                INSERT INTO transactions (
+                    id, amount, type,
+                    customer_id, admin_id,
+                    description, created_at
                 )
-            await self.conn.commit()
-            logger.info("Restored %d transactions", len(customer_transactions))
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+                VALUES (
+                    :id, :amount, :type,
+                    :customer_id, :admin_id,
+                    :description, :created_at
+                );
+                """,
+                transaction,
+            )
+        logger.info("Restored %d transactions", len(customer_transactions))

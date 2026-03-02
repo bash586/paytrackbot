@@ -2,14 +2,15 @@
 from typing import Dict
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
+from services.customer_service import get_customer as select_customer
 from utils.utils import (
     get_args,
-    get_selected_customer,
-    clear_conversation_ctx,
 )
+from handlers.context_manager import get_selected_customer, clear_conversation_ctx, update_context
 from services.database_service import DatabaseManager
 from utils.types import ReportView
 from config import (
+    DATABASE_PATH,
     WELCOME_MSG,
     RECEIVE_ARGS,
     RECEIVE_QUERY,
@@ -18,9 +19,8 @@ from config import (
     CANCEL_KEYBOARD,
     ALLOWED_COMMANDS,
     ALLOWED_SEARCH_MODES,
-    FEEDBACK_AVAILABLE_COMMANDS,
 )
-from handlers.customer_handlers import add_transaction
+from services.customer_service import add_transaction
 from handlers.report_handlers import init_report_ctx, get_search_results
 import logging
 logger = logging.getLogger(__name__)
@@ -32,8 +32,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_command_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process command invocation and route to appropriate handler."""
-
+    # start with a clean state
     clear_conversation_ctx(context.user_data)
+    
     user_input = update.effective_message.text.strip()
     if not user_input:
         logger.warning("Empty command input")
@@ -42,34 +43,42 @@ async def ask_command_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = user_input.split(maxsplit=1)
     mode = parts[0][1:]
     args = parts[1] if len(parts) > 1 else ""
+
     if mode not in ALLOWED_COMMANDS:
         logger.warning(f"Unknown command: {mode}")
         await update.effective_message.reply_html(f"Unknown command: /{mode}")
         clear_conversation_ctx(context.user_data)
         return ConversationHandler.END
-    if mode == "addtransaction":
-        context.user_data["active_command"] = "addtransaction"
-        selected_customer = get_selected_customer(context.user_data)
-        if args:
-            if selected_customer:
+
+    context.user_data["active_command"] = mode
+    prompt = None # feedback msg
+    match mode:
+        case "addtransaction":
+            selected_customer = get_selected_customer(context.user_data)
+            if args:
+                context.user_data["active_command_args"] = args
+                if selected_customer: # execute command directly
+                    return await receive_command_args(update, context)
+            if not selected_customer:
+                return await ask_search_query(update, context)
+            from config import PROMPT_TRANSACTION_DETAILS
+            fullname = selected_customer['fullname']
+            prompt = PROMPT_TRANSACTION_DETAILS.format(customer_fullname = fullname)
+
+        case "addcustomer":
+            if args: # execute command directly
                 context.user_data["active_command_args"] = args
                 return await receive_command_args(update, context)
-            context.user_data["active_command_args"] = args
-        if not selected_customer:
-            return await ask_search_query(update, context)
-        from config import PROMPT_TRANSACTION_DETAILS
-        await update.effective_message.reply_text(PROMPT_TRANSACTION_DETAILS, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode="HTML")
-        return RECEIVE_ARGS
-    
-    if mode == "addcustomer":
-        context.user_data["active_command"] = "addcustomer"
-        if args:
-            context.user_data["active_command_args"] = args
-            return await receive_command_args(update, context)
-        # Cleanup and end conversation
-        from config import PROMPT_NEW_CUSTOMER_INFO
-        await update.effective_message.reply_text(PROMPT_NEW_CUSTOMER_INFO, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode="HTML")
-        return RECEIVE_ARGS
+
+            from config import PROMPT_NEW_CUSTOMER_INFO
+            prompt = PROMPT_NEW_CUSTOMER_INFO
+
+    await update.effective_message.reply_text(
+        prompt, 
+        reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD),
+        parse_mode="HTML"
+    )
+    return RECEIVE_ARGS
 
 async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process command arguments after user input."""
@@ -77,9 +86,11 @@ async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYP
     if not active_command or active_command not in ALLOWED_COMMANDS:
         logger.error(f"Invalid active_command: {active_command}")
         await update.effective_message.reply_text("Invalid command state")
-        # Cleanup and end conversation on error
+        # Cleanup and end conversation
         clear_conversation_ctx(context.user_data)
         return ConversationHandler.END
+
+    admin_id = update.effective_user.id
     args = get_args(context.user_data.get('active_command_args', ''))
     if not args:
         args = get_args(update.message.text)
@@ -87,48 +98,46 @@ async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.warning(f"No arguments provided for command: {active_command}")
         await update.effective_message.reply_text(text="No arguments provided. Please enter transaction details.", reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML')
         return RECEIVE_ARGS
-    if active_command == "addtransaction":
-        res: Dict = await add_transaction(args, update, context)
-        if res['ok'] == False:
-            if len(res['log_msg']) > 0:
-                logger.error("\n".join(res['log_msg']))
-            feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
-            await update.effective_message.reply_text(text="Failed to add new Transaction...\n" + feedback, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML')
-            return RECEIVE_ARGS
-        feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
-        await update.effective_message.reply_text(text=feedback, parse_mode='HTML')
-    
-    if active_command == "addcustomer":
-        from services.customer_service import add_customer
-        from services.database_service import DatabaseManager
-        if len(args) < 2:
-            from config import INVALID_USAGE
-            err_msg = INVALID_USAGE['addcustomer']
-            await update.effective_message.reply_html(err_msg)
-            return RECEIVE_ARGS
-        from utils.utils import normalize_fullname, normalize_phone
-        fullname = normalize_fullname(args[0])
-        phone = normalize_phone(args[1])
-        if not fullname or not phone:
-            from config import INVALID_USAGE
-            err_msg = INVALID_USAGE['addcustomer']
-            await update.effective_message.reply_html(err_msg)
-            return RECEIVE_ARGS
-        db_manager: DatabaseManager = context.bot_data['db_manager']
-        admin_id = update.effective_user.id
-        res: Dict = await add_customer(fullname, phone, admin_id, db_manager, context.user_data, True)
-        if not res['ok']:
-            if len(res['log_msg']) > 0:
-                logger.error("\n".join(res['log_msg']))
-            feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
-            await update.effective_message.reply_text(text="Failed to add new Customer...\n" + feedback, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML')
-            return RECEIVE_ARGS
-        feedback_msg = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
-        await update.effective_message.reply_html(text=f"{feedback_msg}\n{FEEDBACK_AVAILABLE_COMMANDS}")
+
+    match active_command:
+        case "addtransaction":
+            selected_customer = get_selected_customer(context.user_data)
+            res: Dict = await add_transaction(
+                args, admin_id,
+                selected_customer['customer_id'], selected_customer['fullname']
+            )
+            next_state = await handle_service_result(
+                update, res, fail_return=RECEIVE_ARGS,
+                fail_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD),
+                fail_msg_intro="Failed to add new Transaction...\n",
+            )
+            if not res['ok']:
+                return next_state
+            new_balance = res['data']['new_balance']
+            update_context(context.user_data, balance=new_balance)
+
+        case "addcustomer":
+            from services.customer_service import add_customer
+            res: Dict = await add_customer(args, admin_id)
+            next_state = await handle_service_result(
+                update, res, fail_return=RECEIVE_ARGS,
+                fail_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD),
+                fail_msg_intro="Failed to add new Customer...\n",
+            )
+            if not res['ok']:
+                return next_state
+            customer_id = res.get('customer_id')
+            customer_to_select = await select_customer(customer_id, admin_id)
+            if customer_to_select:
+                from handlers.context_manager import set_selected_customer
+                set_selected_customer(
+                    context.user_data,
+                    {k: customer_to_select[k] for k in ("customer_id", "fullname", "balance")}
+                )
 
     # cleanup and end conversation
-    clear_conversation_ctx(context.user_data)
     logger.info(f"User {update.effective_user.id} completed conversation successfully")
+    clear_conversation_ctx(context.user_data)
     return ConversationHandler.END
 
 async def ask_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,13 +173,12 @@ async def ask_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process customer search query and display results."""
-    db_manager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
     args = get_args(update.message.text)
     search_query = args[0]
     limit = args[1] if len(args) > 1 else 5
     search_mode = context.user_data["search_mode"]
-    keyboard = await get_search_results(search_query, limit, db_manager, admin_id, search_mode)
+    keyboard = await get_search_results(search_query, limit, admin_id, search_mode)
     if search_mode == "default":
         if not keyboard:
             await update.effective_message.reply_text(text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=CANCEL_KEYBOARD, parse_mode='HTML')
@@ -183,10 +191,13 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_keyboard = [[InlineKeyboardButton(text="Home", callback_data="report:main:0:0:forwards",)]]
             await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg_id, text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=InlineKeyboardMarkup(reply_keyboard), parse_mode='HTML')
             return ASK_QUERY
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg_id, text=("To Proceed, Select one Customer:\n\n"), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await update.message.reply_text(
+            text=("To Proceed, Select one Customer:\n\n"),
+            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML'
+        )
     if context.user_data.get('active_command'):
         return RECEIVE_ARGS
-    
+
     # Conversation complete - cleanup and end
     clear_conversation_ctx(context.user_data)
     logger.info(f"User {update.effective_user.id} completed conversation successfully")
@@ -197,27 +208,63 @@ async def end_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     General handler to end a conversation.
     Triggered by:
     - Cancel button clicks (callback_data="end_conversation")
-    - Commands executed while in conversation
     """
     # Clean up all user context data
     clear_conversation_ctx(context.user_data)
-    
+
     # Identify what triggered the end
     if update.callback_query:
-        # User clicked the Cancel button
         query = update.callback_query
         await query.answer("Conversation cancelled")
         await query.delete_message()
         logger.info(f"User {update.effective_user.id} cancelled conversation via cancel button")
-    elif update.effective_message:
-        # User sent a message (likely a new command)
-        logger.info(f"User {update.effective_user.id} exited conversation via new command: {update.effective_message.text}")
-    
+
     return ConversationHandler.END
 
 async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /undo command to revert the last action."""
-    db_manager: DatabaseManager = context.bot_data['db_manager']
     admin_id = update.effective_user.id
-    feedback_msg = await db_manager.undo_last_action_for_admin(admin_id, context.user_data)
-    await update.effective_message.reply_html(feedback_msg)
+    from services.undo_service import undo_service
+    res = await undo_service(admin_id)
+    await handle_service_result(update, res, fail_msg_intro= "Failed to Undo...\n")
+    if not res['ok']:
+        return
+    data = res['data']
+    action_type = data['action_type']
+    match action_type:
+        case "add_customer":
+            customer_id = data['customer_id']
+            selected_customer = get_selected_customer(context.user_data)
+            # if deleted customer is stored in context, remove it!
+            if selected_customer and selected_customer['customer_id'] == customer_id:
+                from handlers.context_manager import set_selected_customer
+                set_selected_customer(context.user_data, None)
+        case "add_transaction":
+            db = DatabaseManager(DATABASE_PATH)
+            customer_id = data['customer_id']
+            selected_customer = get_selected_customer(context.user_data)
+            if selected_customer and selected_customer['customer_id'] == customer_id:
+                new_balance = (await db.get_customer_by_id(customer_id, admin_id))['balance']
+                update_context(context.user_data, balance=new_balance)
+        case "delete_customer":
+            pass
+        case "rename_customer":
+            customer_id = data['customer_id']
+            new_name = data['new_name']
+            selected_customer = get_selected_customer(context.user_data)
+            if selected_customer and selected_customer['customer_id'] == customer_id:
+                update_context(context.user_data, fullname=new_name)
+        case "change_phone":
+            pass
+async def handle_service_result(update, res: Dict, fail_return = None, fail_markup = None, fail_msg_intro = ''):
+    if not res['ok']:
+        feedback = "\n".join(res['msg']) if len(res['msg']) > 0 else ""
+        await update.effective_message.reply_text(
+            text= fail_msg_intro + "\n" + feedback,
+            reply_markup=fail_markup, parse_mode='HTML'
+        )
+        return fail_return
+    if len(res['msg']) > 0:
+        feedback = "\n".join(res['msg'])
+        await update.effective_message.reply_text(text=feedback, parse_mode='HTML')
+    

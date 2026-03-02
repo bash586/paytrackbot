@@ -1,9 +1,10 @@
 """Data access layer for customer operations."""
 import logging
 from typing import List, Dict, Any, Optional
-from utils.types import Customer
+from services.database_service import AppError
+from utils.types import ActionType, Customer
 from utils.utils import normalize_name
-
+from aiosqlite import IntegrityError
 logger = logging.getLogger(__name__)
 
 
@@ -13,7 +14,7 @@ class CustomerRepository:
     def __init__(self, conn):
         """Initialize with database connection."""
         self.conn = conn
-    
+
     async def search_customers(self, query: str, limit: int, admin_id: int) -> List[Dict[str, Any]]:
         """Search customers by name or phone."""
         logger.debug("Searching customers for query=%s limit=%s admin_id=%s", query, limit, admin_id)
@@ -32,17 +33,30 @@ class CustomerRepository:
             customers = await cursor.fetchall()
 
         if not customers:
-            logger.debug("No customers found matching query=%s", query)
+            logger.debug("No customers found matching query=%s", query_normalized)
             return []
 
-        return [{"id": customer["id"], "fullname": customer["fullname"]} for customer in customers]
+        return [
+            {"id": customer["id"], "fullname": customer["fullname"]}
+            for customer in customers
+        ]
+
+    async def update_customer(
+        self, cur_id: int, new_id: int, created_at: str, balance: float
+    ):
+        await self.conn.execute(
+            """
+            UPDATE customers
+            SET id = ?, created_at = ?, balance = ?
+            WHERE id = ?;
+            """,
+            (cur_id, created_at, balance, new_id),
+        )
 
     async def add_customer(
-        self, fullname: str, phone: str, admin_id: int, with_logging: bool = False
+        self, fullname: str, phone: str, admin_id: int
     ) -> int:
         """Add a new customer to the database."""
-        logger.debug("Adding customer: fullname=%s phone=%s admin_id=%s", fullname, phone, admin_id)
-        
         try:
             cursor = await self.conn.execute(
                 """
@@ -51,13 +65,14 @@ class CustomerRepository:
                 """,
                 (fullname, phone, admin_id),
             )
-            await self.conn.commit()
+
             customer_id = cursor.lastrowid
-            logger.info("Added customer id=%s fullname=%s admin_id=%s", customer_id, fullname, admin_id)
             return customer_id
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+        except IntegrityError as exc:
+            raise AppError(
+                f"Customer named '{fullname}' already exists"
+            ) from exc
+
 
     async def get_customer_by_id(self, customer_id: int, admin_id: int) -> Optional[Customer]:
         """Fetch customer by ID."""
@@ -131,28 +146,23 @@ class CustomerRepository:
     async def delete_customer(self, customer_id: int, admin_id: int) -> None:
         """Delete a customer and all related transactions."""
         logger.debug("Deleting customer id=%s", customer_id)
-        
-        try:
-            await self.conn.execute(
-                "DELETE FROM transactions WHERE customer_id = ? AND admin_id = ?;",
-                (customer_id, admin_id),
-            )
-            await self.conn.execute(
-                "DELETE FROM customers WHERE id = ? AND admin_id = ?;",
-                (customer_id, admin_id),
-            )
-            await self.conn.commit()
-            logger.info("Deleted customer id=%s", customer_id)
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+
+        await self.conn.execute(
+            "DELETE FROM transactions WHERE customer_id = ? AND admin_id = ?;",
+            (customer_id, admin_id),
+        )
+        await self.conn.execute(
+            "DELETE FROM customers WHERE id = ? AND admin_id = ?;",
+            (customer_id, admin_id),
+        )
+        logger.info("Deleted customer id=%s", customer_id)
 
     async def update_customer_name(
         self, new_name: str, customer_id: int, admin_id: int
     ) -> Dict[str, str]:
         """Update customer name."""
         logger.debug("Updating customer name: customer_id=%s new_name=%s", customer_id, new_name)
-        
+
         # Get old name
         async with self.conn.execute(
             "SELECT fullname FROM customers WHERE id = ? AND admin_id = ?;",
@@ -161,7 +171,7 @@ class CustomerRepository:
             customer = await cursor.fetchone()
 
         if not customer:
-            raise Exception(f"Customer {customer_id} not found")
+            raise Exception(f"Customer with id:{customer_id} not found")
 
         old_name = customer["fullname"]
 
@@ -170,11 +180,10 @@ class CustomerRepository:
                 "UPDATE customers SET fullname = ? WHERE id = ? AND admin_id = ?;",
                 (new_name, customer_id, admin_id),
             )
-            await self.conn.commit()
             logger.info("Updated customer name: id=%s old=%s new=%s", customer_id, old_name, new_name)
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+
+        except IntegrityError as exc:
+            raise AppError(f"A customer with the name {new_name} already exists.")
 
         return {"Old Name": old_name, "New Name": new_name, "Current Name": new_name}
 
@@ -196,15 +205,10 @@ class CustomerRepository:
 
         old_phone = customer["phone"]
 
-        try:
-            await self.conn.execute(
-                "UPDATE customers SET phone = ? WHERE id = ? AND admin_id = ?;",
-                (new_phone, customer_id, admin_id),
-            )
-            await self.conn.commit()
-            logger.info("Updated customer phone: id=%s", customer_id)
-        except Exception as exc:
-            await self.conn.rollback()
-            raise exc
+        await self.conn.execute(
+            "UPDATE customers SET phone = ? WHERE id = ? AND admin_id = ?;",
+            (new_phone, customer_id, admin_id),
+        )
+        logger.info("Updated customer phone: id=%s", customer_id)
 
         return {"Old Phone": old_phone, "New Phone": new_phone}
