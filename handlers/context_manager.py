@@ -5,9 +5,10 @@ from utils.types import SelectedCustomer
 
 def clear_conversation_ctx(user_data: Dict) -> None:
     """Clear all conversation-related context."""
-    user_data['search_mode'] = None
-    user_data['active_command_args'] = None
-    user_data['active_command'] = None
+    user_data.pop('addtransaction_one_time_selection', None)
+    user_data.pop('search_mode', None)
+    user_data.pop('active_command_args', None)
+    user_data.pop('active_command', None)
 
 
 def get_selected_customer(user_data: dict) -> Optional[SelectedCustomer]:

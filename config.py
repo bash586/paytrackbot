@@ -42,7 +42,7 @@ INVALID_USAGE = {
 # ---------------------------------------------------------------------------
 
 PROMPT_TRANSACTION_DETAILS = (
-    "<b>You are adding a transaction for {customer_fullname}...</b>\n\n"
+    "<b>You are adding a transaction for {}...</b>\n\n"
     "Please use this format:\n"
     "   <b>[±amount]</b>\n"
     "   <b>[Description]</b>\n\n"

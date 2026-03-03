@@ -63,6 +63,7 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
     """Handle customer selection from callback query."""
     query = update.callback_query
     await query.answer()
+    await update.effective_message.delete()
     try:
         query_parts = query.data.split(":")
         if len(query_parts) < 2:

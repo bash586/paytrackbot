@@ -34,7 +34,7 @@ async def ask_command_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process command invocation and route to appropriate handler."""
     # start with a clean state
     clear_conversation_ctx(context.user_data)
-    
+
     user_input = update.effective_message.text.strip()
     if not user_input:
         logger.warning("Empty command input")
@@ -60,10 +60,13 @@ async def ask_command_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if selected_customer: # execute command directly
                     return await receive_command_args(update, context)
             if not selected_customer:
+                context.user_data[f'addtransaction_one_time_selection'] = True
                 return await ask_search_query(update, context)
             from config import PROMPT_TRANSACTION_DETAILS
             fullname = selected_customer['fullname']
-            prompt = PROMPT_TRANSACTION_DETAILS.format(customer_fullname = fullname)
+            prompt = PROMPT_TRANSACTION_DETAILS.format(
+                fullname.upper()
+            )
 
         case "addcustomer":
             if args: # execute command directly
@@ -96,7 +99,10 @@ async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYP
         args = get_args(update.message.text)
     if not args:
         logger.warning(f"No arguments provided for command: {active_command}")
-        await update.effective_message.reply_text(text="No arguments provided. Please enter transaction details.", reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML')
+        await update.effective_message.reply_text(
+            text="No arguments provided. Please enter transaction details.",
+            reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML'
+            )
         return RECEIVE_ARGS
 
     match active_command:
@@ -115,7 +121,10 @@ async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYP
                 return next_state
             new_balance = res['data']['new_balance']
             update_context(context.user_data, balance=new_balance)
-
+            one_time_selection_mode = context.user_data.pop('addtransaction_one_time_selection', None)
+            if one_time_selection_mode:
+                from handlers.context_manager import set_selected_customer
+                set_selected_customer(context.user_data, None)
         case "addcustomer":
             from services.customer_service import add_customer
             res: Dict = await add_customer(args, admin_id)
@@ -137,6 +146,7 @@ async def receive_command_args(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # cleanup and end conversation
     logger.info(f"User {update.effective_user.id} completed conversation successfully")
+
     clear_conversation_ctx(context.user_data)
     return ConversationHandler.END
 
@@ -179,14 +189,16 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
     limit = args[1] if len(args) > 1 else 5
     search_mode = context.user_data["search_mode"]
     keyboard = await get_search_results(search_query, limit, admin_id, search_mode)
+    await update.effective_message.delete()
     if search_mode == "default":
         if not keyboard:
             await update.effective_message.reply_text(text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=CANCEL_KEYBOARD, parse_mode='HTML')
             return ASK_QUERY
-        await update.effective_message.reply_text(text='Choose One Customer:', reply_markup=InlineKeyboardMarkup(keyboard),)
+        await update.effective_message.reply_text(
+            text='Choose One Customer:', reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     elif search_mode == "transactions_report":
         msg_id = context.user_data.get("report_navigator",dict()).get('msg_id')
-        await update.effective_message.delete()
         if not keyboard:
             reply_keyboard = [[InlineKeyboardButton(text="Home", callback_data="report:main:0:0:forwards",)]]
             await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg_id, text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=InlineKeyboardMarkup(reply_keyboard), parse_mode='HTML')
