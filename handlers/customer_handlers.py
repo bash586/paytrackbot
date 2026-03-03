@@ -63,7 +63,6 @@ async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_
     """Handle customer selection from callback query."""
     query = update.callback_query
     await query.answer()
-    await update.effective_message.delete()
     try:
         query_parts = query.data.split(":")
         if len(query_parts) < 2:
@@ -181,8 +180,8 @@ async def rename_customer_command(update: Update, context: ContextTypes.DEFAULT_
     customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
     new_name = args[0]
-
-    result = await rename_customer(new_name, customer_id, admin_id)
+    old_name = selected_customer['fullname']
+    result = await rename_customer(old_name, new_name, customer_id, admin_id)
     if not result['ok']:
         logger.error(f"Failed to rename customer {customer_id}: {result['error']}")
         await update.effective_message.reply_text(result['error'])

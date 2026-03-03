@@ -2,7 +2,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from config import DATABASE_PATH
-from services.database_service import DatabaseManager
+from services.database_service import AppError, DatabaseManager
 from utils.types import Transaction, TransactionType
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class TransactionRepository:
             transaction = await cur.fetchone()
 
         if not transaction:
-            raise Exception(f"Transaction {transaction_id} not found")
+            raise AppError(f"Transaction {transaction_id} not found")
 
         customer_id = transaction["customer_id"]
         amount = transaction["amount"]

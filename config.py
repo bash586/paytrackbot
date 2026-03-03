@@ -5,12 +5,9 @@ from telegram import InlineKeyboardButton
 DEFAULT_PHONE_PATTERN = r"^\+?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}$"
 DEFAULT_NAME_PATTERN = r"^[A-Za-z\-\']{2,20}(\s[A-Za-z]{1,20}){0,3}\s[A-Za-z]{2,20}$"
 DATABASE_PATH = path.join("data","app_database.db")
-NO_SELECTED_CUSTOMER_WARNING = """<b>Error: you must select a customer first...</b>
+NO_SELECTED_CUSTOMER_WARNING = """<b>You have not Selected a customer yet...</b>
 
-<code>/search query</code>*
-
- query* : <b>name</b>/<b>phone</b>
- Note: <code>/search</code> will display all your customers
+<code>/search</code>
 """
 INVALID_USAGE = {
     "addtransaction": (
@@ -19,17 +16,18 @@ INVALID_USAGE = {
         "[±amount]  ( '-' :SALE | '+':PAYMENT )\n"
         "[info]</code>"
     ),
-    "addcustomer": '\n'.join([
-        f"<b>Incorrect Command Usage...</b>",
-        "Usage: <code>/addcustomer fullname*|phone*</code>"
-    ]),
+    "addcustomer": (
+        f"<b>Please use this format</b>\n"
+        "   <b>[Fullname]</b>\n"
+        "   <b>[Phone]</b>\n"
+    ),
     "rename":'\n'.join([
         "<b>Incorrect Command Usage...</b>",
-        "Usage: <code>/rename newname*</code>",
+        "Usage: <code>/rename [newname]</code>",
     ]),
     "changephone": '\n'.join([
         "<b>Incorrect Command Usage...</b>",
-        "Usage: <code>/changephone newphone*</code>",
+        "Usage: <code>/changephone [newphone]</code>",
     ]),
     "search": ("Please use this format:\n"
     "   <b>[SearchQuery]</b>\n"

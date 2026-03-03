@@ -24,17 +24,20 @@ async def undo_service(admin_id: int):
         try:
             undo_details, data = await execute_undo(conn, action_type, payload)
             res['data'] = data
+            await action_log_repo.delete_action_log(last_action["id"])
             await conn.commit()
         except AppError as exc:
             res['ok'] = False
             res['msg'].append(str(exc))
             logger.info("AppError: " + str(exc))
+            await action_log_repo.delete_action_log(last_action["id"])
+            await conn.commit()
             return res
         except Exception as exc:
             res['ok'] = False
             logger.error("Exception: " + str(exc))
-            return res
-        action_log_repo.delete_action_log(last_action["id"])
+            # return res
+            raise
     
     res['data']['action_type'] = action_type
 
@@ -64,7 +67,7 @@ async def execute_undo(conn, action_type, payload):
             data['new_name'] = undo_details['Current Name']
 
         case "change_phone":
-            undo_details = await undo_update_customer_phone(**payload)
+            undo_details = await undo_update_customer_phone(conn, **payload)
 
     return undo_details, data
 
@@ -86,7 +89,7 @@ async def undo_delete_customer(
 
     customer_repo = CustomerRepository(conn)
     transaction_repo = TransactionRepository(conn)
-
+    
     # re-Create Deleted customer
     temp_id = await customer_repo.add_customer(fullname, phone, admin_id)
     # restore old meta-info and transactions

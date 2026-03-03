@@ -10,11 +10,9 @@ from handlers.context_manager import get_selected_customer, clear_conversation_c
 from services.database_service import DatabaseManager
 from utils.types import ReportView
 from config import (
-    DATABASE_PATH,
     WELCOME_MSG,
     RECEIVE_ARGS,
     RECEIVE_QUERY,
-    ASK_QUERY,
     PROMPT_CUSTOMER_SEARCH,
     CANCEL_KEYBOARD,
     ALLOWED_COMMANDS,
@@ -155,7 +153,10 @@ async def ask_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         context.user_data["search_mode"] = "default"
-        await update.effective_message.reply_text(PROMPT_CUSTOMER_SEARCH, reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode="HTML")
+        await update.effective_message.reply_text(
+            PROMPT_CUSTOMER_SEARCH,
+            reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode="HTML"
+        )
         return RECEIVE_QUERY
     await query.answer()
     parts = query.data.split(":")
@@ -189,11 +190,13 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
     limit = args[1] if len(args) > 1 else 5
     search_mode = context.user_data["search_mode"]
     keyboard = await get_search_results(search_query, limit, admin_id, search_mode)
-    await update.effective_message.delete()
     if search_mode == "default":
         if not keyboard:
-            await update.effective_message.reply_text(text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=CANCEL_KEYBOARD, parse_mode='HTML')
-            return ASK_QUERY
+            await update.effective_message.reply_text(
+                text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"),
+                reply_markup=InlineKeyboardMarkup(CANCEL_KEYBOARD), parse_mode='HTML'
+            )
+            return RECEIVE_QUERY
         await update.effective_message.reply_text(
             text='Choose One Customer:', reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -202,7 +205,7 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
         if not keyboard:
             reply_keyboard = [[InlineKeyboardButton(text="Home", callback_data="report:main:0:0:forwards",)]]
             await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg_id, text=(f"No customers found with name: <b>{search_query}</b>.\n\n" "Please enter another customer name\n"), reply_markup=InlineKeyboardMarkup(reply_keyboard), parse_mode='HTML')
-            return ASK_QUERY
+            return RECEIVE_QUERY
         await update.message.reply_text(
             text=("To Proceed, Select one Customer:\n\n"),
             reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML'
@@ -211,6 +214,7 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
         return RECEIVE_ARGS
 
     # Conversation complete - cleanup and end
+    await update.effective_message.delete()
     clear_conversation_ctx(context.user_data)
     logger.info(f"User {update.effective_user.id} completed conversation successfully")
     return ConversationHandler.END
@@ -252,11 +256,12 @@ async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from handlers.context_manager import set_selected_customer
                 set_selected_customer(context.user_data, None)
         case "add_transaction":
-            db = DatabaseManager(DATABASE_PATH)
+            
             customer_id = data['customer_id']
             selected_customer = get_selected_customer(context.user_data)
             if selected_customer and selected_customer['customer_id'] == customer_id:
-                new_balance = (await db.get_customer_by_id(customer_id, admin_id))['balance']
+                from services.customer_service import get_customer
+                new_balance = (await get_customer(customer_id, admin_id))['balance']
                 update_context(context.user_data, balance=new_balance)
         case "delete_customer":
             pass

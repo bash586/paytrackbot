@@ -50,7 +50,7 @@ class CustomerRepository:
             SET id = ?, created_at = ?, balance = ?
             WHERE id = ?;
             """,
-            (cur_id, created_at, balance, new_id),
+            (new_id, created_at, balance,cur_id),
         )
 
     async def add_customer(
@@ -74,23 +74,26 @@ class CustomerRepository:
             ) from exc
 
 
-    async def get_customer_by_id(self, customer_id: int, admin_id: int) -> Optional[Customer]:
+    async def get_customer_by_id(self, customer_id: int, admin_id: int, with_details: bool=False) -> Optional[Customer]:
         """Fetch customer by ID."""
+
+        details = ", admin_id, created_at" if with_details else ""
+
+        query = (
+            "SELECT id, fullname, phone, balance {} "
+            "FROM customers WHERE id = ? AND admin_id = ?;"
+        ).format(details)
+
         async with self.conn.execute(
-            "SELECT id, fullname, phone, balance FROM customers WHERE id = ? AND admin_id = ?;",
-            (customer_id, admin_id),
+            query, (customer_id, admin_id)
         ) as cursor:
-            customer = await cursor.fetchone()
+            customer = dict(await cursor.fetchone())
 
         if not customer:
             raise Exception(f"Customer {customer_id} not found")
-
-        return {
-            "customer_id": customer["id"],
-            "fullname": customer["fullname"],
-            "phone": customer["phone"],
-            "balance": customer["balance"],
-        }
+        customer['customer_id'] = customer.pop('id')
+        print(customer)
+        return customer
 
     async def get_customer_summary(self, customer_id: int, admin_id: int) -> Dict[str, Any]:
         """Get comprehensive customer summary with recent transactions."""
@@ -148,10 +151,6 @@ class CustomerRepository:
         logger.debug("Deleting customer id=%s", customer_id)
 
         await self.conn.execute(
-            "DELETE FROM transactions WHERE customer_id = ? AND admin_id = ?;",
-            (customer_id, admin_id),
-        )
-        await self.conn.execute(
             "DELETE FROM customers WHERE id = ? AND admin_id = ?;",
             (customer_id, admin_id),
         )
@@ -161,7 +160,7 @@ class CustomerRepository:
         self, new_name: str, customer_id: int, admin_id: int
     ) -> Dict[str, str]:
         """Update customer name."""
-        logger.debug("Updating customer name: customer_id=%s new_name=%s", customer_id, new_name)
+        
 
         # Get old name
         async with self.conn.execute(
@@ -180,7 +179,6 @@ class CustomerRepository:
                 "UPDATE customers SET fullname = ? WHERE id = ? AND admin_id = ?;",
                 (new_name, customer_id, admin_id),
             )
-            logger.info("Updated customer name: id=%s old=%s new=%s", customer_id, old_name, new_name)
 
         except IntegrityError as exc:
             raise AppError(f"A customer with the name {new_name} already exists.")
@@ -191,7 +189,6 @@ class CustomerRepository:
         self, new_phone: str, customer_id: int, admin_id: int
     ) -> Dict[str, str]:
         """Update customer phone."""
-        logger.debug("Updating customer phone: customer_id=%s new_phone=%s", customer_id, new_phone)
         
         # Get old phone
         async with self.conn.execute(
@@ -209,6 +206,5 @@ class CustomerRepository:
             "UPDATE customers SET phone = ? WHERE id = ? AND admin_id = ?;",
             (new_phone, customer_id, admin_id),
         )
-        logger.info("Updated customer phone: id=%s", customer_id)
 
         return {"Old Phone": old_phone, "New Phone": new_phone}

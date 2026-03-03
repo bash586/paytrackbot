@@ -14,6 +14,8 @@ from services.action_log_repository import ActionLogRepository
 from services.customer_repository import CustomerRepository
 from services.report_repository import ReportRepository
 from services.database_service import DatabaseManager, AppError
+import logging
+logger = logging.getLogger(__name__)
 
 async def get_customer(
     customer_id: int,
@@ -29,14 +31,11 @@ async def get_customer(
         async with db.get_connection() as conn:
             customer_repo = CustomerRepository(conn)
             customer = await customer_repo.get_customer_by_id(customer_id, admin_id)
-
         if not customer:
             return None
 
         return customer
     except Exception as exc:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to select customer {customer_id}: {exc}")
         return None
 
@@ -58,8 +57,6 @@ async def get_customer_transactions(
             report_repo = ReportRepository(conn)
             return await report_repo.fetch_transactions_page(customer_id, admin_id, limit, cursor)
     except Exception as exc:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to fetch transactions for customer {customer_id}: {exc}")
         return None
 
@@ -174,8 +171,8 @@ async def add_transaction(
         db = DatabaseManager(DATABASE_PATH)
         async with db.get_connection() as conn:
             trans_repo = TransactionRepository(conn)
-            action_log_repo = ActionLogRepository(conn)
             transaction_id = await trans_repo.add_transaction(amount, type_, description, customer_id, admin_id)
+            action_log_repo = ActionLogRepository(conn)
             await action_log_repo.add_action_log (
                 ActionType.ADD_TRANSACTION, admin_id, customer_id,
                 payload = {
@@ -216,7 +213,19 @@ async def delete_customer(
         db = DatabaseManager(DATABASE_PATH)
         async with db.get_connection() as conn:
             customer_repo = CustomerRepository(conn)
+            trans_repo = TransactionRepository(conn)
+            customer = await customer_repo.get_customer_by_id(customer_id, admin_id, True)
+            customer_trans = await trans_repo.get_customer_transactions(customer_id, admin_id)
             await customer_repo.delete_customer(customer_id, admin_id)
+            action_log_repo = ActionLogRepository(conn)
+            await action_log_repo.add_action_log (
+                ActionType.DELETE_CUSTOMER, admin_id, customer_id,
+                payload = {
+                    'customer_transactions': customer_trans,
+                    **customer
+                }
+            )
+            await conn.commit()
     except Exception:
         return {"ok": False, "error": "Something went wrong. Please try again later."}
 
@@ -224,6 +233,7 @@ async def delete_customer(
 
 
 async def rename_customer(
+    old_name: str,
     new_name: str,
     customer_id: int,
     admin_id: int,
@@ -233,6 +243,7 @@ async def rename_customer(
     Returns:
         dict: {'ok': bool, 'error': str or None, 'new name': str}
     """
+    logger.debug("Updating customer name: customer_id=%s new_name=%s", customer_id, new_name)
     new_name = normalize_fullname(new_name)
     if not is_valid_name(new_name):
         return {
@@ -251,7 +262,18 @@ async def rename_customer(
         async with db.get_connection() as conn:
             customer_repo = CustomerRepository(conn)
             await customer_repo.update_customer_name(new_name, customer_id, admin_id)
+            action_log_repo = ActionLogRepository(conn)
+            await action_log_repo.add_action_log (
+                ActionType.RENAME_CUSTOMER, admin_id, customer_id,
+                payload = {
+                    "admin_id": admin_id,
+                    "customer_id": customer_id,
+                    "new_name": new_name,
+                    "old_name": old_name
+                }
+            )
             await conn.commit()
+            logger.info("Updated customer name: id=%s old=%s new=%s", customer_id, old_name, new_name)
     except AppError as exc:
         return {"ok": False, "error": str(exc), "new name": new_name}
     except Exception:
@@ -273,6 +295,8 @@ async def change_phone(
     Returns:
         dict: {'ok': bool, 'error': str or None, 'proposed_phone': str}
     """
+    logger.debug("Updating customer phone: customer_id=%s new_phone=%s", customer_id, new_phone)
+
     new_phone = normalize_phone(new_phone)
     if not is_valid_phone(new_phone):
         return {"ok": False, "error": f"Invalid phone number: {new_phone}", "proposed_phone": new_phone}
@@ -281,8 +305,21 @@ async def change_phone(
         db = DatabaseManager(DATABASE_PATH)
         async with db.get_connection() as conn:
             customer_repo = CustomerRepository(conn)
-            await customer_repo.update_customer_phone(new_phone, customer_id, admin_id)
+            phone_change_dict = await customer_repo.update_customer_phone(new_phone, customer_id, admin_id)
+            
+            action_log_repo = ActionLogRepository(conn)
+            await action_log_repo.add_action_log (
+                ActionType.CHANGE_PHONE, admin_id, customer_id,
+                payload = {
+                    "admin_id": admin_id,
+                    "customer_id": customer_id,
+                    "new_phone": new_phone,
+                    "old_phone": phone_change_dict['Old Phone']
+                }
+            )
+
             await conn.commit()
+            logger.info("Updated customer phone: id=%s", customer_id)
     except AppError as exc:
         return {"ok": False, "error": str(exc), "proposed_phone": new_phone}
     except Exception:
@@ -304,8 +341,6 @@ async def get_customer_summary(customer_id: int, admin_id: int) -> Optional[Dict
             summary = await customer_repo.get_customer_summary(customer_id, admin_id)
             return summary
     except Exception as exc:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to fetch customer summary {customer_id}: {exc}")
         return None
 
@@ -317,7 +352,5 @@ async def get_search_results_service(query, limit, admin_id) -> Optional[Dict[st
             customers = await customer_repo.search_customers(query, limit, admin_id)
             return customers
     except Exception as exc:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to fetch Search Results {admin_id}: {exc}")
         return None
