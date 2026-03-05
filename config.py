@@ -86,7 +86,7 @@ FEEDBACK_AVAILABLE_COMMANDS = '\n'.join([
     " ● <b>add transaction</b>",
     "   <code>/addtransaction amount|type|info</code>",
     " ● <b>view customer's info</b>",
-    "   <code>/summary</code>",
+    "   <code>/info</code>",
     " ● <b>update customer's name</b>",
     "   <code>/rename newName</code>",
     " ● <b>update customer's phone</b>",
@@ -108,7 +108,7 @@ Create a customer.
 <code>/search query | limit</code>
 Search by name or phone.
 
-<code>/summary</code>
+<code>/info</code>
 Show details of the selected customer.
 
 <code>/delete</code>

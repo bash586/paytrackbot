@@ -53,6 +53,6 @@ SelectedCustomer = Customer
 class ReportView(str, Enum):
 	DUE_CUSTOMERS = "due_customers"
 	OVERPAID_CUSTOMERS = "overpaid_customers"
-	OVERALL_SUMMARY = "overall_summary"
+	OVERALL_INFO = "overall_info"
 	CUSTOMER_TRANSACTION_HISTORY = "customer_transaction_history"
 # Types and enums will be moved here

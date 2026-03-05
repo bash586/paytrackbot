@@ -132,7 +132,7 @@ class ReportRepository:
         }
 
     async def fetch_overall_report(self, admin_id: int) -> Dict[str, Any]:
-        """Fetch overall summary statistics for all customers."""
+        """Fetch overall info statistics for all customers."""
         logger.debug("Fetching overall report for admin_id=%s", admin_id)
 
         async with self.conn.execute(

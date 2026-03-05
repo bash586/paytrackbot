@@ -328,20 +328,20 @@ async def change_phone(
     return {"ok": True, "error": None, "proposed_phone": new_phone}
 
 
-async def get_customer_summary(customer_id: int, admin_id: int) -> Optional[Dict[str, Any]]:
-    """Fetch customer summary (profile + recent transactions + totals).
+async def get_customer_info(customer_id: int, admin_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch customer info (profile + recent transactions + totals).
     
     Returns:
-        dict: Customer summary data or None if error occurs
+        dict: Customer info data or None if error occurs
     """
     try:
         db = DatabaseManager(DATABASE_PATH)
         async with db.get_connection() as conn:
             customer_repo = CustomerRepository(conn)
-            summary = await customer_repo.get_customer_summary(customer_id, admin_id)
-            return summary
+            info = await customer_repo.get_customer_info(customer_id, admin_id)
+            return info
     except Exception as exc:
-        logger.error(f"Failed to fetch customer summary {customer_id}: {exc}")
+        logger.error(f"Failed to fetch customer info {customer_id}: {exc}")
         return None
 
 async def get_search_results_service(query, limit, admin_id) -> Optional[Dict[str, Any]]:

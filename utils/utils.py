@@ -143,15 +143,15 @@ def parse_pagination_cursor(cursor_str: str, mode: str) -> tuple[bool, Optional[
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def format_summary_html(summary: dict, recent_actions_formatted: str) -> str:
-    """Return HTML formatted customer summary for replies."""
-    return f"""<b>「✦{summary['fullname'].upper()}✦」</b>
+def format_info_html(info: dict, recent_actions_formatted: str) -> str:
+    """Return HTML formatted customer info for replies."""
+    return f"""<b>「✦{info['fullname'].upper()}✦」</b>
   ─•────
-Phone: <b><code>{summary['phone']}</code></b>
+Phone: <b><code>{info['phone']}</code></b>
 
-Balance: <b>{summary['balance']:.1f}</b>
-Total Payments: <b>{summary['payments']:.1f}</b>
-Total Sales: <b>{summary['sales']:.1f}</b>
+Balance: <b>{info['balance']:.1f}</b>
+Total Payments: <b>{info['payments']:.1f}</b>
+Total Sales: <b>{info['sales']:.1f}</b>
 
 Recent Transactions:
 <blockquote>

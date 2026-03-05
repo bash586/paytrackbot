@@ -13,7 +13,7 @@ from handlers.conversation_handlers import (
 
 # Import from customer handlers
 from handlers.customer_handlers import (
-    summary,
+    info,
     select_customer_command,
     delete_customer_command,
     rename_customer_command,
@@ -40,7 +40,7 @@ __all__ = [
     'end_conversation',
     'undo',
     # Customer handlers
-    'summary',
+    'info',
     'select_customer_command',
     'delete_customer_command',
     'rename_customer_command',

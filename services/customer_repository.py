@@ -95,8 +95,8 @@ class CustomerRepository:
         print(customer)
         return customer
 
-    async def get_customer_summary(self, customer_id: int, admin_id: int) -> Dict[str, Any]:
-        """Get comprehensive customer summary with recent transactions."""
+    async def get_customer_info(self, customer_id: int, admin_id: int) -> Dict[str, Any]:
+        """Get comprehensive customer info with recent transactions."""
         customer = await self.get_customer_by_id(customer_id, admin_id)
         
         # Get recent transactions

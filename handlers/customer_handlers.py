@@ -7,12 +7,12 @@ from utils.utils import (
     validate_selected_customer,
     get_args,
     format_transaction,
-    format_summary_html
+    format_info_html
 )
 from handlers.context_manager import clear_conversation_ctx, get_selected_customer, set_selected_customer, update_context
 from services.customer_service import (
     delete_customer,
-    get_customer_summary,
+    get_customer_info,
     rename_customer,
     change_phone,
     get_customer_transactions,
@@ -34,29 +34,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get and display summary info about selected customer."""
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get and display info about selected customer."""
     selected_customer = get_selected_customer(context.user_data)
     is_valid, error_msg = validate_selected_customer(selected_customer)
     if not is_valid:
-        logger.warning(f"Summary called without valid customer: {error_msg}")
+        logger.warning(f"Info called without valid customer: {error_msg}")
         await update.effective_message.reply_html(NO_SELECTED_CUSTOMER_WARNING)
         return
     customer_id = selected_customer['customer_id']
     admin_id = update.effective_user.id
-    summary = await get_customer_summary(customer_id, admin_id)
-    if not summary:
-        logger.error(f"Failed to fetch customer summary {customer_id}")
+    info_data = await get_customer_info(customer_id, admin_id)
+    if not info_data:
+        logger.error(f"Failed to fetch customer info {customer_id}")
         await update.effective_message.reply_text("Something went wrong. Please try again later.")
         return
-    recent = summary['recent']
+    recent = info_data['recent']
     recent_actions = []
     for i in range(len(recent)):
         item = recent[i]
         recent_actions.append(format_transaction(item, i == len(recent)-1))
     recent_actions_formatted = "".join(recent_actions) if len(recent_actions) > 0 else "No transactions found.\n"
-    logger.info(f"payments {summary['payments']:.1f}")
-    message = format_summary_html(summary, recent_actions_formatted)
+    logger.info(f"payments {info_data['payments']:.1f}")
+    message = format_info_html(info_data, recent_actions_formatted)
     await update.effective_message.reply_html(text=message)
 
 async def select_customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

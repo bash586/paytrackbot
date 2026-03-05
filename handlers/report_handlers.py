@@ -52,7 +52,7 @@ def build_report_menu_keyboard():
     return [
         [InlineKeyboardButton(text="Due — Payment Needed", callback_data=f"report:{ReportView.DUE_CUSTOMERS.value}:0:1:forwards")],
         [InlineKeyboardButton(text="Overpaid — Credit Available", callback_data=f"report:{ReportView.OVERPAID_CUSTOMERS.value}:0:1:forwards")],
-        [InlineKeyboardButton(text="Overall Summary", callback_data=f"report:{ReportView.OVERALL_SUMMARY.value}:0:1:forwards")],
+        [InlineKeyboardButton(text="Overall Info", callback_data=f"report:{ReportView.OVERALL_INFO.value}:0:1:forwards")],
         [InlineKeyboardButton(text="Transactions History For ...", callback_data=f"wait_search_query:transactions_report")],
     ]
 
@@ -158,9 +158,9 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton("←", callback_data="report:main:0:0:backwards")])
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
-    elif mode == ReportView.OVERALL_SUMMARY:
-        from services.report_service import fetch_overall_summary
-        totals_dict = await fetch_overall_summary(admin_id)
+    elif mode == ReportView.OVERALL_INFO:
+        from services.report_service import fetch_overall_info
+        totals_dict = await fetch_overall_info(admin_id)
         report_str = (
             f"<b>● Overall Balance: {totals_dict['total_balance']:.2f}\n\n"
             f"● Total Customers: {totals_dict['total_customers']}\n" 

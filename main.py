@@ -46,7 +46,7 @@ def main():
         CommandHandler('start', handlers.start),
         CallbackQueryHandler(handlers.select_customer_command, pattern=r"^customer_select:"),
         CallbackQueryHandler(handlers.report_callback, pattern=r"^report:"),
-        CommandHandler("summary", handlers.summary),
+        CommandHandler("info", handlers.info),
         ConversationHandler(
             entry_points=[
                 MessageHandler(

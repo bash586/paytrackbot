@@ -49,7 +49,7 @@ async def fetch_transactions_page(
         page["current_cursor"] = cursor
         return page
 
-async def fetch_overall_summary(admin_id: int) -> Dict:
+async def fetch_overall_info(admin_id: int) -> Dict:
     db = DatabaseManager(DATABASE_PATH)
     async with db.get_connection() as conn:
         repo = ReportRepository(conn)

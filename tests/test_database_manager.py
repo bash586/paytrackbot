@@ -29,16 +29,16 @@ async def test_search_customers_returns_results(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_customer_summary_totals_and_recent(tmp_path):
-    db = DatabaseManager(str(tmp_path / "summary.db"))
+async def test_get_customer_info_totals_and_recent(tmp_path):
+    db = DatabaseManager(str(tmp_path / "info.db"))
     await db.init_database()
     cid = await db.add_customer("Sam Smith", "999", admin_id=2)
     await db.add_transaction(100.0, TransactionType.SALE, "sale1", cid, 2)
     await db.add_transaction(40.0, TransactionType.PAYMENT, "pay1", cid, 2)
-    summary = await db.get_customer_summary(cid, 2)
-    assert summary["sales"] == pytest.approx(100.0)
-    assert summary["payments"] == pytest.approx(40.0)
-    assert isinstance(summary["recent"], list)
+    info = await db.get_customer_info(cid, 2)
+    assert info["sales"] == pytest.approx(100.0)
+    assert info["payments"] == pytest.approx(40.0)
+    assert isinstance(info["recent"], list)
     await db.close()
 
 

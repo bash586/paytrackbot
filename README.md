@@ -1,79 +1,85 @@
 # PayTrackBot
 
-### We’ll build a Telegram bot for managing deferred (credit) payments — e.g., allowing the store owner to:
+## Problem This Bot Addresses
 
-1. Register customers.
+PayTrackBot is a Telegram bot built for shop owners who rely on credit-based sales. It replaces messy paper records with a fast, chat-based system to track who owes what — right from your phone. It lets you:
 
-2. Record new purchases on credit.
+- Add new customers and manage their balances.
+- Record sale/payment transactions for customers.
+- Search for customers by name or phone number.
+- View a customer overview.
+- Delete, rename, or update a customer's phone number.
+- Undo the last recorded action (adding a customer/transaction, deleting, renaming, or changing a phone number).
+- View various kinds of reports: due payments, overdue payments, etc.
 
-3. Track outstanding balances and payment history.
+## How to Install and Run on Your Local Machine
 
-4. Mark payments as settled.
+1. **Install `uv`** (Python package and project manager):
+   ```bash
+   # Linux / macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh
 
-## Actions/Commands
+   # Windows (PowerShell)
+   irm https://astral.sh/uv/install.ps1 | iex
+   ```
+   After installation, restart your terminal so the `uv` command is available.
 
-| Action             | Command Example                 | Description                                     |
-| ------------------ | ------------------------------- | ----------------------------------------------- |
-| Add a customer     | `/addcustomer John\|0590000000`  | Creates a new customer record                   |
-| Record transaction | `/addtransaction 50\|groceries`  | Adds a deferred payment of $50                  |
-| List all customers | `/search`                       | Lists customers and their balances              |
-| search customers   | `/search name`  `/search phone` | Lists customers for user to select one customer |
-| View customer info | `/summary`                      | display main info about selected customer       |
-| view last actions  | `/history`                      | shows last actions made by admin                |
-| undo action        | `/undo`                         | enables admin to undo selected action           |
+2. **Create a Telegram bot via BotFather:**
+   - Open Telegram and search for **@BotFather**.
+   - Send `/newbot` and follow the prompts (choose a name and username for your bot).
+   - Copy the **API token** BotFather provides — you'll need it in step 6.
 
-### Check List:
-* before doing any updates that require updating balances -> remove previous report messages
-* add pager-view of transactions and history of commands made by admin (linked-list based implementation)
-* add search_transaction command displaying all details of related transactions
-* show user a loader until transaction is commited
-* remove customer account. or auto-delete customers with zero balance.
-* enable user to add parameters to commands in conversation mode
-* enable users to change customer's name.
-* enable user to add a link between multiple customer accounts.
-* enable users to merge multiple records of customers into one record.
-* add help command to guide users.
-* if there is only one search result. select automatically
-* add a password check for add_payment command and changing customer name.
-* show your creative touch with tags
-* enhance search: enable users to add hidden nicknames, and store it in customers(name) field with a special delimeter
-* output excel summary **[unfortunately, may be a dream out of my reach]**
+3. **Add commands to the bot menu:**
+   - In the same **@BotFather** chat, send `/setcommands`.
+   - Select your bot when prompted.
+   - Paste the following command list:
+     ```
+     addtransaction - Record a credit transaction
+     addcustomer - Add a new customer
+     search - Search for a customer
+     info - View customer overview
+     undo - Undo the last action
+     report - View a balance report
+     rename - Rename a customer
+     changephone - Change customer phone number
+     delete - Delete a customer
+     ```
+   - BotFather will confirm the commands have been set.
 
-## Tech Stack
+4. **Clone the repository:**
+   ```bash
+   git clone https://github.com/bash586/paytrackbot.git
+   cd paytrackbot
+   ```
 
-Language: Python
+5. **Set up the Python environment** (requires Python 3.12+):
+   ```bash
+   uv venv
+   source .venv/bin/activate   # Linux/macOS
+   # .venv\Scripts\activate    # Windows
+   uv sync
+   ```
 
-Library: python-telegram-bot
+6. **Configure the environment variables:**
+   Create a `.env` file in the root directory and paste your bot token:
+   ```env
+   BOT_TOKEN=your_telegram_bot_token_here
+   ```
 
-Database: _______
+7. **Run the bot:**
+   ```bash
+   uv run main.py
+   ```
 
-Deployed by: _____ (consider "Render")
+> The database (SQLite) is initialized automatically on first startup.
 
-Optional: dotenv for managing bot tokens
+## Technology Stack
 
-
-user_data = {
-
-    context_state = {
-        "selected_customer": {
-            "id": customer['id'],
-            "fullname": customer['fullname'],
-            "balance": customer['balance'],
-        }
-        "current_action": None #bookmark: to be removed
-    }
-}
-action_data = {
-    action: None,
-    action_date: None,
-    admin_id: None,
-    customer_id: None,
-    action_info: {
-        <!-- rename -->
-        oldname: None,
-        <!-- delete customer -->
-        fullname, created_at, balance, phone
-        <!-- transaction -->
-        amount, type, created_at, id, description
-    }
-}
+| Layer               | Technology                         |
+| ------------------- | ---------------------------------- |
+| Language            | Python 3.12+                       |
+| Bot Framework       | `python-telegram-bot` v21.6        |
+| Database            | SQLite (async via `aiosqlite`)     |
+| Environment Config  | `python-dotenv`                    |
+| Testing             | `pytest`, `pytest-asyncio`         |
+| Dependency Manager  | `uv`                               |
